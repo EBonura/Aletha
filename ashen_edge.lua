@@ -44,6 +44,7 @@ px=64 py=0
 vx=0 vy=0
 facing=1
 grounded=true
+prev_by1=0
 
 -- animation state
 state="idle"
@@ -277,38 +278,117 @@ end
 
 -- -- tile/map system --
 
--- map buffer: mdat[y*lvl_w+x+1]=tile_id (0=empty, 1-N=runtime tile)
+-- map buffers: mdat[layer][y*lvl_w+x+1]
+-- layer 1=bg, 2=main, 3=fg
 mdat={}
 cam_x=0
 cam_y=0
 
 function load_tiles()
+ local sz=lvl_w*lvl_h
  if lvl_nt==0 then
-  for i=1,lvl_w*lvl_h do mdat[i]=0 end
+  for L=1,lvl_nl do
+   mdat[L]={}
+   for i=1,sz do mdat[L][i]=0 end
+  end
   return
  end
- -- header: 11 bytes at map_base
+ -- header: 12+nl bytes at map_base
  local b=map_base
  local nt=peek(b)
- local mw=peek(b+1)+peek(b+2)*256
- local mh=peek(b+3)+peek(b+4)*256
- local sx=peek(b+5)+peek(b+6)*256
- local sy=peek(b+7)+peek(b+8)*256
- local tbsz=peek(b+9)+peek(b+10)*256
+ local nl=peek(b+1)
+ local mw=peek(b+2)+peek(b+3)*256
+ local mh=peek(b+4)+peek(b+5)*256
+ local sx=peek(b+6)+peek(b+7)*256
+ local sy=peek(b+8)+peek(b+9)*256
+ local tbsz=peek(b+10)+peek(b+11)*256
+ -- per-layer encoding modes
+ local lmode={}
+ for i=1,nl do lmode[i]=peek(b+11+i) end
 
- -- tile index: nt*2 bytes (u16 offsets)
- local tidx=b+11
- -- tile blob starts after index
+ -- tile index + blob (shifted by nl mode bytes)
+ local tidx=b+12+nl
  local tblob=tidx+nt*2
 
- -- decode each tile's RLE pixels into
- -- sprite sheet memory
+ -- decode ALL data from __map__ into
+ -- lua tables before writing to memory
+
+ -- 1. decode tile pixel data
+ local tile_pix={}
  for t=0,nt-1 do
   local off=peek(tidx+t*2)
        +peek(tidx+t*2+1)*256
-  -- decode nibble RLE -> 256 pixels
-  local pix=decode_rle(tblob+off,256)
-  -- poke into sprite sheet as nibble pairs
+  tile_pix[t]=decode_rle(tblob+off,256)
+ end
+
+ -- 2. decode each layer's map data
+ local p=tblob+tbsz
+ for L=1,nl do
+  mdat[L]={}
+  for i=1,sz do mdat[L][i]=0 end
+
+  if lmode[L]==0 then
+   -- mode 0: standard RLE
+   local mx,my=0,0
+   while my<mh do
+    local cell=peek(p)
+    local run=peek(p+1)
+    p+=2
+    for i=1,run do
+     if my<mh then
+      mdat[L][my*mw+mx+1]=cell
+      mx+=1
+      if mx>=mw then mx=0 my+=1 end
+     end
+    end
+   end
+
+  elseif lmode[L]==1 then
+   -- mode 1: tiled fill
+   local tw=peek(p)
+   local th=peek(p+1)
+   local dx=peek(p+2)
+   local dy=peek(p+3)
+   local rw=peek(p+4)
+   local rh=peek(p+5)
+   local td=p+6
+   for ry=0,rh-1 do
+    for rx=0,rw-1 do
+     local tc=peek(td+(ry%th)*tw+(rx%tw))
+     mdat[L][(dy+ry)*mw+dx+rx+1]=tc
+    end
+   end
+   p+=6+tw*th
+
+  elseif lmode[L]==2 then
+   -- mode 2: packbits
+   local idx=1
+   while idx<=sz do
+    local ctrl=peek(p)
+    p+=1
+    if ctrl<128 then
+     for i=1,ctrl+1 do
+      mdat[L][idx]=peek(p)
+      p+=1
+      idx+=1
+     end
+    else
+     local rep=ctrl-125
+     local val=peek(p)
+     p+=1
+     for i=1,rep do
+      mdat[L][idx]=val
+      idx+=1
+     end
+    end
+   end
+  end
+ end
+
+ -- 3. write main tiles (1..nst) to spritesheet
+ local nst=lvl_nst
+ for t=0,nst-1 do
+  local pix=tile_pix[t]
   local tcol=t%8
   local trow=t\8
   for py=0,15 do
@@ -322,21 +402,24 @@ function load_tiles()
   end
  end
 
- -- map RLE starts after tile blob
- local p=tblob+tbsz
-
- local mx,my=0,0
- mdat={}
- for i=1,mw*mh do mdat[i]=0 end
- while my<mh do
-  local cell=peek(p)
-  local run=peek(p+1)
-  p+=2
-  for i=1,run do
-   if my<mh then
-    mdat[my*mw+mx+1]=cell
-    mx+=1
-    if mx>=mw then mx=0 my+=1 end
+ -- 4. write bg tiles (nst+1..nt) to user
+ -- memory at 0x4300 (128 bytes each, 4bpp)
+ -- replace transparent with bg_clr so
+ -- memcpy to screen works without
+ -- per-pixel transparency checks
+ local bg_base=0x8000
+ local bg_clr=1 -- matches cls() color
+ for t=nst,nt-1 do
+  local pix=tile_pix[t]
+  local addr=bg_base+(t-nst)*128
+  for py=0,15 do
+   for px=0,7 do
+    local i=py*16+px*2
+    local lo=pix[i+1]&0xf
+    local hi=pix[i+2]&0xf
+    if lo==trans then lo=bg_clr end
+    if hi==trans then hi=bg_clr end
+    poke(addr+py*8+px,lo|(hi<<4))
    end
   end
  end
@@ -344,7 +427,7 @@ end
 
 function tile_at(tx,ty)
  if tx<0 or tx>=lvl_w or ty<0 or ty>=lvl_h then return 0 end
- return mdat[ty*lvl_w+tx+1]
+ return mdat[2][ty*lvl_w+tx+1]\4
 end
 
 function tile_flag(tx,ty)
@@ -356,6 +439,11 @@ end
 function tile_solid(tx,ty)
  -- flag bit 0 = solid
  return band(tile_flag(tx,ty),1)>0
+end
+
+function tile_platform(tx,ty)
+ -- flag bit 1 = one-way platform
+ return band(tile_flag(tx,ty),2)>0
 end
 
 -- check if collision box overlaps
@@ -398,59 +486,133 @@ function resolve_x()
  end
 end
 
+function check_platforms(bx0,bx1,by1)
+ -- check one-way platforms at feet row
+ -- only land if feet were above last frame
+ local tx0=flr(bx0/16)
+ local tx1=flr((bx1-0.01)/16)
+ local ty=flr((by1-0.01)/16)
+ for tx=tx0,tx1 do
+  if tile_platform(tx,ty) then
+   local ptop=ty*16
+   if prev_by1<=ptop then
+    return true,ptop
+   end
+  end
+ end
+ return false
+end
+
+function land_on(y_top)
+ py=y_top-cb_y1
+ vy=0
+ if not grounded then
+  grounded=true
+  if state=="fall" then
+   set_anim(a_land)
+   state="land"
+  end
+ end
+end
+
 function resolve_y()
  local bx0=px+cb_x0
  local by0=py+cb_y0
  local bx1=px+cb_x1
  local by1=py+cb_y1
- if not box_hits_solid(bx0,by0,bx1,by1) then
-  grounded=false
+ local solid=box_hits_solid(bx0,by0,bx1,by1)
+ if solid then
+  if vy>=0 then
+   local ty1=flr((by1-0.01)/16)
+   land_on(ty1*16)
+  elseif vy<0 then
+   local ty0=flr(by0/16)
+   py=(ty0+1)*16-cb_y0
+   vy=0
+  end
   return
  end
+ -- no solid: check one-way platforms
  if vy>=0 then
-  -- falling/standing: snap to top
-  local ty1=flr((by1-0.01)/16)
-  py=ty1*16-cb_y1
-  vy=0
-  if not grounded then
-   grounded=true
-   if state=="fall" then
-    set_anim(a_land)
-    state="land"
+  local hit,ptop=check_platforms(
+   bx0,bx1,by1)
+  if hit then
+   land_on(ptop)
+   return
+  end
+ end
+ grounded=false
+end
+
+function draw_bg_layer()
+ -- bg tiles stored at 0x8000 in user mem
+ -- 128 bytes each (16 rows x 8 bytes)
+ -- blit to screen via memcpy (no spr())
+ local md=mdat[1]
+ if not md then return end
+ local plx=lplx[1]
+ -- floor to even pixel for byte alignment
+ local cx=flr(cam_x*plx)\2*2
+ local cy=flr(cam_y*plx)
+ local ts=16
+ local tx0=max(0,flr(cx/ts))
+ local ty0=max(0,flr(cy/ts))
+ local tx1=min(lvl_w-1,tx0+8)
+ local ty1=min(lvl_h-1,ty0+8)
+ local nst=lvl_nst
+ for ty=ty0,ty1 do
+  for tx=tx0,tx1 do
+   local c=md[ty*lvl_w+tx+1]
+   if c>0 then
+    local sx=tx*ts-cx
+    local sy=ty*ts-cy
+    if c<=nst then
+     local sc=(c-1)%8
+     local sr=(c-1)\8
+     spr(sr*32+sc*2,sx,sy,2,2)
+    else
+     local src=0x8000+(c-nst-1)*128
+     -- clip x: tile is 8 bytes (16px)
+     local x0=max(0,-sx\2)   -- skip bytes on left
+     local x1=min(7,(127-sx)\2) -- last byte on right
+     if x1>=x0 then
+      local w=x1-x0+1
+      for py=0,15 do
+       local dy=sy+py
+       if dy>=0 and dy<128 then
+        memcpy(0x6000+dy*64+sx\2+x0,
+         src+py*8+x0,w)
+       end
+      end
+     end
+    end
    end
   end
- elseif vy<0 then
-  -- jumping up: hit ceiling
-  local ty0=flr(by0/16)
-  py=(ty0+1)*16-cb_y0
-  vy=0
  end
 end
 
-function draw_map()
- -- compute visible tile range
- local ts=16 -- tile size in pixels
- local tx0=flr(cam_x/ts)
- local ty0=flr(cam_y/ts)
- local tx1=tx0+8 -- 128/16 = 8 tiles wide
- local ty1=ty0+8
- -- clamp
- tx0=max(0,tx0)
- ty0=max(0,ty0)
- tx1=min(lvl_w-1,tx1)
- ty1=min(lvl_h-1,ty1)
-
+function draw_main_layer()
+ local md=mdat[2]
+ if not md then return end
+ local plx=lplx[2]
+ local cx=cam_x*plx
+ local cy=cam_y*plx
+ local ts=16
+ local tx0=max(0,flr(cx/ts))
+ local ty0=max(0,flr(cy/ts))
+ local tx1=min(lvl_w-1,tx0+8)
+ local ty1=min(lvl_h-1,ty0+8)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
-   local t=mdat[ty*lvl_w+tx+1]
-   if t>0 then
-    -- tile t is at sprite sheet position:
-    -- col=(t-1)%8, row=(t-1)\8
-    -- spr id = row*2*16 + col*2
+   local c=md[ty*lvl_w+tx+1]
+   if c>0 then
+    local t=c\4
+    local fx=band(c,2)>0
+    local fy=band(c,1)>0
     local sc=(t-1)%8
     local sr=(t-1)\8
-    local sid=sr*32+sc*2
-    spr(sid,tx*ts-cam_x,ty*ts-cam_y,2,2)
+    spr(sr*32+sc*2,tx*ts-cx,ty*ts-cy,
+     2,2,fx,fy)
    end
   end
  end
@@ -733,6 +895,7 @@ function _update60()
  end
 
  -- -- physics --
+ prev_by1=py+cb_y1
  if not grounded then
   vy+=grav
  end
@@ -773,8 +936,9 @@ end
 function _draw()
  cls(1)
 
- -- draw map
- draw_map()
+ -- bg + main layers
+ draw_bg_layer()
+ draw_main_layer()
 
  -- draw player anchored to body center
  local ax=anc[cur_anim][cur_frame]

@@ -27,9 +27,12 @@ CELL_W, CELL_H = 91, 19
 
 # ── Tileset config ──
 TILESET_PNG = "/Users/ebonura/Downloads/DARK Edition 2/Tileset/DARK Edition Tileset No background.png"
+BG_TILESET_PNG = os.path.join(DIR, "bg_tileset.png")
 TILE_SIZE = 16
 TILESET_COLS = 18
 TILESET_ROWS = 16
+BG_TILESET_COLS = 19
+BG_TILESET_ROWS = 6
 
 # Luminance band → PICO-8 color mapping (matches editor defaults)
 BAND_RANGES = [(0, 20), (21, 45), (46, 100), (101, 185), (186, 255)]
@@ -356,6 +359,12 @@ def bytes_to_gfx(data):
 
 # ── Tileset processing ──
 
+def tile_remap_hash(tile_img):
+    """Hash a tile by its remapped PICO-8 colors (not raw grayscale)."""
+    pixels = remap_tile_colors(tile_img)
+    return hashlib.md5(bytes(pixels)).hexdigest()
+
+
 def slice_tileset():
     """Slice tileset PNG into 16x16 tiles, deduplicate, return list of PIL Images."""
     img = Image.open(TILESET_PNG).convert("RGBA")
@@ -369,9 +378,8 @@ def slice_tileset():
             pixels = list(tile.getdata())
             if all(p[3] == 0 for p in pixels):
                 continue
-            # Dedup by pixel hash
-            grey = tile.convert("L").tobytes()
-            h = hashlib.md5(grey).hexdigest()
+            # Dedup by remapped color hash
+            h = tile_remap_hash(tile)
             if h in seen_hashes:
                 continue
             # Check 8 dihedral transforms for duplicates
@@ -381,7 +389,7 @@ def slice_tileset():
                     t = tile.rotate(-rot * 90, expand=False)
                     if flip:
                         t = t.transpose(Image.FLIP_LEFT_RIGHT)
-                    th = hashlib.md5(t.convert("L").tobytes()).hexdigest()
+                    th = tile_remap_hash(t)
                     if th in seen_hashes:
                         is_dup = True
                         break
@@ -390,6 +398,31 @@ def slice_tileset():
             if is_dup:
                 continue
             name = f"T_{r:02d}_{c:02d}"
+            seen_hashes[h] = len(tiles)
+            tiles.append((name, tile))
+    return tiles
+
+
+def slice_bg_tileset():
+    """Slice BG tileset PNG into 16x16 tiles, deduplicate, return list of PIL Images."""
+    img = Image.open(BG_TILESET_PNG).convert("RGBA")
+    # Crop to 16px grid (304x96)
+    cw = (img.width // TILE_SIZE) * TILE_SIZE
+    ch = (img.height // TILE_SIZE) * TILE_SIZE
+    img = img.crop((0, 0, cw, ch))
+    tiles = []
+    seen_hashes = {}
+    for r in range(ch // TILE_SIZE):
+        for c in range(cw // TILE_SIZE):
+            x0, y0 = c * TILE_SIZE, r * TILE_SIZE
+            tile = img.crop((x0, y0, x0 + TILE_SIZE, y0 + TILE_SIZE))
+            pixels = list(tile.getdata())
+            if all(p[3] == 0 for p in pixels):
+                continue
+            h = tile_remap_hash(tile)
+            if h in seen_hashes:
+                continue
+            name = f"BG_{r:02d}_{c:02d}"
             seen_hashes[h] = len(tiles)
             tiles.append((name, tile))
     return tiles
@@ -463,8 +496,9 @@ def pixels_to_spritesheet_bytes(pixels):
 
 def read_level_json(json_path):
     """Read level data from level_data.json.
-    Returns (map_w, map_h, map_grid, xform_grid, spawn_x, spawn_y, flags, band_colors)
-    where map_grid[y][x] = tile_index (255=empty), xform_grid[y][x] = packed xform."""
+    Returns (map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, flags, band_colors, parallax)
+    where map_grids[layer][y][x] = tile_index (255=empty), xform_grids[layer][y][x] = packed xform.
+    2 layers: 0=BG, 1=Main."""
     with open(json_path) as f:
         data = json.load(f)
 
@@ -476,17 +510,33 @@ def read_level_json(json_path):
     sx = data.get("spawnX", -1)
     sy = data.get("spawnY", -1)
 
-    map_grid = []
-    for row in data["map"]:
-        map_grid.append([int(v) for v in row])
+    def parse_grid(rows):
+        return [[int(v) for v in row] for row in rows]
 
-    xform_grid = []
-    if "mapXform" in data:
-        for row in data["mapXform"]:
-            xform_grid.append([int(v) for v in row])
+    def empty_grid():
+        return [[255] * w for _ in range(h)]
+
+    def zero_grid():
+        return [[0] * w for _ in range(h)]
+
+    if "layers" in data:
+        map_grids = []
+        xform_grids = []
+        for layer in data["layers"]:
+            map_grids.append(parse_grid(layer["map"]))
+            xform_grids.append(parse_grid(layer["xform"]))
+        # Only keep first 2 layers (BG, Main) — FG was removed
+        map_grids = map_grids[:2]
+        xform_grids = xform_grids[:2]
+        # v2→v3 migration: if no bgTiles field, BG layer had main tileset indices — clear it
+        if "bgTiles" not in data and data.get("version", 2) < 3:
+            map_grids[0] = empty_grid()
+            xform_grids[0] = zero_grid()
     else:
-        for y in range(h):
-            xform_grid.append([0] * w)
+        # v1 migration: single map → Main layer (index 1)
+        map_grids = [empty_grid(), parse_grid(data["map"])]
+        xf = parse_grid(data["mapXform"]) if "mapXform" in data else zero_grid()
+        xform_grids = [zero_grid(), xf]
 
     flags = [0] * 256
     if "flags" in data:
@@ -498,14 +548,146 @@ def read_level_json(json_path):
     if "bandColors" in data:
         band_colors = [int(c) for c in data["bandColors"]]
 
-    return w, h, map_grid, xform_grid, sx, sy, flags, band_colors
+    parallax = [0.5, 1.0]  # defaults: BG, Main
+    if "parallax" in data:
+        parallax = [float(v) for v in data["parallax"]][:2]
+
+    return w, h, map_grids, xform_grids, sx, sy, flags, band_colors, parallax
 
 
-def build_level_data(tileset, map_data):
+## -- Map layer encoding modes --
+
+def encode_rle(cell_grid, map_w, map_h):
+    """Mode 0: Standard 2-byte RLE (cell, run) pairs."""
+    out = bytearray()
+    for y in range(map_h):
+        x = 0
+        while x < map_w:
+            cell = cell_grid[y][x]
+            run = 1
+            while x + run < map_w and run < 255:
+                if cell_grid[y][x + run] != cell:
+                    break
+                run += 1
+            out.append(cell)
+            out.append(run)
+            x += run
+    return out
+
+
+def detect_tiling(cell_grid, map_w, map_h):
+    """Mode 1: Detect repeating rectangular pattern.
+    Returns (cost, tw, th, dx, dy, rw, rh, tile_cells) or None."""
+    # Find bounding box of non-empty cells
+    min_x, min_y = map_w, map_h
+    max_x, max_y = -1, -1
+    for y in range(map_h):
+        for x in range(map_w):
+            if cell_grid[y][x] != 0:
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+    if max_x < 0:
+        return None  # empty layer
+    bw = max_x - min_x + 1
+    bh = max_y - min_y + 1
+
+    best = None
+    for tw in range(1, bw + 1):
+        for th in range(1, bh + 1):
+            cost = 6 + tw * th  # header + pattern cells
+            if best and cost >= best[0]:
+                continue
+            # Verify modulo tiling
+            ok = True
+            for y in range(min_y, max_y + 1):
+                if not ok:
+                    break
+                for x in range(min_x, max_x + 1):
+                    ref_y = min_y + (y - min_y) % th
+                    ref_x = min_x + (x - min_x) % tw
+                    if cell_grid[y][x] != cell_grid[ref_y][ref_x]:
+                        ok = False
+                        break
+            if ok:
+                tile_cells = []
+                for ty in range(th):
+                    for tx in range(tw):
+                        tile_cells.append(cell_grid[min_y + ty][min_x + tx])
+                best = (cost, tw, th, min_x, min_y, bw, bh, tile_cells)
+    return best
+
+
+def encode_packbits(cell_grid, map_w, map_h):
+    """Mode 2: PackBits encoding.
+    Control 0..127: next ctrl+1 bytes are literals.
+    Control 128..255: next byte repeated (ctrl-125) times (3..130)."""
+    flat = []
+    for y in range(map_h):
+        for x in range(map_w):
+            flat.append(cell_grid[y][x])
+    out = bytearray()
+    i = 0
+    n = len(flat)
+    while i < n:
+        # Check for run of 3+
+        run = 1
+        while i + run < n and run < 130 and flat[i + run] == flat[i]:
+            run += 1
+        if run >= 3:
+            out.append(125 + run)  # 128..255
+            out.append(flat[i])
+            i += run
+        else:
+            # Collect literals until we hit a run of 3+
+            lit_start = i
+            lit_len = 0
+            while i < n and lit_len < 128:
+                r = 1
+                while i + r < n and r < 130 and flat[i + r] == flat[i]:
+                    r += 1
+                if r >= 3:
+                    break
+                lit_len += 1
+                i += 1
+            if lit_len > 0:
+                out.append(lit_len - 1)  # 0..127
+                out.extend(flat[lit_start:lit_start + lit_len])
+    return out
+
+
+def encode_layer(cell_grid, map_w, map_h, label=""):
+    """Try all encoding modes, return (mode, data_bytes, description)."""
+    # Mode 0: Standard RLE
+    rle = encode_rle(cell_grid, map_w, map_h)
+    best_mode, best_data = 0, rle
+    desc = f"RLE {len(rle)}b"
+
+    # Mode 1: Tiled fill
+    tiling = detect_tiling(cell_grid, map_w, map_h)
+    if tiling and tiling[0] < len(best_data):
+        cost, tw, th, dx, dy, rw, rh, cells = tiling
+        data = bytearray([tw, th, dx, dy, rw, rh])
+        data.extend(cells)
+        best_mode, best_data = 1, data
+        desc = f"TiledFill {tw}x{th} at ({dx},{dy}) {rw}x{rh} = {len(data)}b (RLE was {len(rle)}b)"
+
+    # Mode 2: PackBits
+    packbits = encode_packbits(cell_grid, map_w, map_h)
+    if len(packbits) < len(best_data):
+        best_mode, best_data = 2, packbits
+        desc = f"PackBits {len(packbits)}b (RLE was {len(rle)}b)"
+
+    return best_mode, best_data, desc
+
+
+def build_level_data(tileset, bg_tileset, map_data):
     """Build runtime tile + map data for __map__ section.
 
     Args:
-        tileset: list of (name, PIL.Image) from slice_tileset()
+        tileset: list of (name, PIL.Image) from slice_tileset() — main tiles
+        bg_tileset: list of (name, PIL.Image) from slice_bg_tileset() — BG tiles
         map_data: tuple from read_level_json()
 
     Returns:
@@ -515,7 +697,10 @@ def build_level_data(tileset, map_data):
         tile_flags: dict of runtime_tile_id -> flag byte
         gen_lines: list of Lua code lines for generated block
     """
-    map_w, map_h, map_grid, xform_grid, spawn_x, spawn_y, editor_flags, band_colors = map_data
+    map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, editor_flags, band_colors, parallax = map_data
+    num_layers = len(map_grids)
+    # Layer 0 = BG (uses bg_tileset), Layer 1 = Main (uses tileset)
+    layer_tilesets = [bg_tileset, tileset]
 
     # Use band colors from level data if available
     global BAND_COLORS
@@ -523,75 +708,118 @@ def build_level_data(tileset, map_data):
         BAND_COLORS = band_colors
 
     print(f"\n=== LEVEL DATA ===")
-    print(f"  Map size: {map_w}x{map_h} ({map_w*map_h} cells)")
+    print(f"  Map size: {map_w}x{map_h} ({map_w*map_h} cells), {num_layers} layers")
     print(f"  Spawn: ({spawn_x}, {spawn_y})")
 
-    # Step 1: Collect all used (tile_id, rot_group) pairs
-    # rot_group: 0 = needs base only (rot 0,2), 1 = needs rot90 (rot 1,3)
-    used_combos = set()  # (tile_id, rot, hflip, vflip)
-    for y in range(map_h):
-        for x in range(map_w):
-            ti = map_grid[y][x]
-            if ti == 255:
-                continue
-            xf = xform_grid[y][x]
-            rot = xf & 3
-            hflip = bool(xf & 4)
-            vflip = bool(xf & 8)
-            used_combos.add((ti, rot, hflip, vflip))
+    # Step 1: Collect used tiles per layer (each layer uses its own tileset)
+    # Per-layer sets: used_base[L] and used_rot90[L]
+    used_base = [set() for _ in range(num_layers)]
+    used_rot90 = [set() for _ in range(num_layers)]
+    for L in range(num_layers):
+        for y in range(map_h):
+            for x in range(map_w):
+                ti = map_grids[L][y][x]
+                if ti == 255:
+                    continue
+                rot = xform_grids[L][y][x] & 3
+                if rot == 0 or rot == 2:
+                    used_base[L].add(ti)
+                else:
+                    used_rot90[L].add(ti)
 
-    # Step 2: Determine runtime tiles needed
-    # For each base tile used: need base version. If rot 1 or 3 used, also need rot90 version.
-    # Runtime xform is just (flip_x, flip_y) for spr().
-    #
-    # Mapping editor xform → (runtime_tile_variant, spr_flip_x, spr_flip_y):
-    #   rot=0: base, flip_x=hflip, flip_y=vflip
-    #   rot=2: base, flip_x=!hflip, flip_y=!vflip  (180° = hflip+vflip of base)
-    #   rot=1: rot90, flip_x=vflip, flip_y=hflip  (derived from transform math)
-    #   rot=3: rot90, flip_x=!vflip, flip_y=!hflip (270° = 90°+180°)
-    #
-    # But this transform math is tricky to get right. Instead, we flatten all
-    # transforms at build time: each unique (tile, full_xform) = 1 runtime tile.
-    # This avoids flip math errors. Runtime has NO flips, just spr() calls.
-
-    # Collect unique transformed pixel data
-    rt_tiles = []       # list of pixel arrays (each 256 P8 colors)
-    rt_tile_map = {}    # (editor_tile_id, packed_xform) -> runtime_tile_id (1-based)
+    # Step 2: Build runtime tiles from both tilesets into a shared pool
+    rt_tiles = []       # pixel arrays (256 P8 colors each)
     rt_tile_flags = {}  # runtime_tile_id -> flag byte
+    # Per-layer maps: base_rt[L][ti] -> rt_id, rot90_rt[L][ti] -> rt_id
+    base_rt = [{} for _ in range(num_layers)]
+    rot90_rt = [{} for _ in range(num_layers)]
 
-    for ti, rot, hflip, vflip in sorted(used_combos):
-        if ti >= len(tileset):
-            print(f"  WARNING: tile index {ti} out of range, skipping")
-            continue
-        name, tile_img = tileset[ti]
-        base_pixels = remap_tile_colors(tile_img)
-        transformed = apply_transform(base_pixels, rot, hflip, vflip)
-
-        # Check if this exact pixel data already exists
-        t_hash = hashlib.md5(bytes(transformed)).hexdigest()
-        found = False
+    def add_tile_variant(pixels, L, ti, is_rot90):
+        """Add a pixel variant to the runtime pool, deduplicating by hash."""
+        t_hash = hashlib.md5(bytes(pixels)).hexdigest()
+        # Check existing
         for rt_id, existing in enumerate(rt_tiles):
             if hashlib.md5(bytes(existing)).hexdigest() == t_hash:
-                packed_xf = rot | (int(hflip) << 2) | (int(vflip) << 3)
-                rt_tile_map[(ti, packed_xf)] = rt_id + 1
-                found = True
-                break
-
-        if not found:
-            rt_id = len(rt_tiles)
-            rt_tiles.append(transformed)
-            packed_xf = rot | (int(hflip) << 2) | (int(vflip) << 3)
-            rt_tile_map[(ti, packed_xf)] = rt_id + 1
-            # Carry over editor flags (sprite+1 index in editor flags)
+                if is_rot90:
+                    rot90_rt[L][ti] = rt_id + 1
+                else:
+                    base_rt[L][ti] = rt_id + 1
+                return
+        # New tile
+        rt_id = len(rt_tiles)
+        rt_tiles.append(pixels)
+        if is_rot90:
+            rot90_rt[L][ti] = rt_id + 1
+        else:
+            base_rt[L][ti] = rt_id + 1
+        # Only main layer tiles (L=1) get collision flags
+        if L == 1:
             rt_tile_flags[rt_id + 1] = editor_flags[ti] if ti < len(editor_flags) else 0
 
-    num_rt = len(rt_tiles)
-    print(f"  Used tile combos: {len(used_combos)}")
-    print(f"  Runtime tiles (after dedup): {num_rt}")
+    # Process main layer (1) first → sprite sheet tiles (max 64).
+    # Then BG layer (0) → user memory tiles (rendered via memcpy).
+    def process_layer_tiles(L):
+        ts = layer_tilesets[L]
+        all_used = sorted(used_base[L] | used_rot90[L])
+        for ti in all_used:
+            if ti >= len(ts):
+                print(f"  WARNING: layer {L} tile index {ti} out of range (tileset has {len(ts)}), skipping")
+                continue
+            name, tile_img = ts[ti]
+            base_pixels = remap_tile_colors(tile_img)
+            if ti in used_base[L]:
+                add_tile_variant(base_pixels, L, ti, False)
+            if ti in used_rot90[L]:
+                rot90_pixels = apply_transform(base_pixels, 1, False, False)
+                add_tile_variant(rot90_pixels, L, ti, True)
 
-    if num_rt > 63:
-        print(f"  WARNING: {num_rt} runtime tiles exceeds 63 tile limit!")
-        print(f"  (sprite sheet can hold 64 16x16 tiles, ID 0 reserved for empty)")
+    process_layer_tiles(1)  # Main → sprite sheet
+    num_spr_tiles = len(rt_tiles)
+    process_layer_tiles(0)  # BG → user memory
+    num_rt = len(rt_tiles)
+
+    print(f"  BG: {len(used_base[0]|used_rot90[0])} editor tiles, Main: {len(used_base[1]|used_rot90[1])} editor tiles")
+    print(f"  Runtime tiles: {num_rt} ({num_spr_tiles} spr + {num_rt - num_spr_tiles} bg)")
+
+    # Sprite sheet: 128x128px = 8x8 grid of 16x16 tiles = 64 max
+    if num_spr_tiles > 64:
+        print(f"  ERROR: {num_spr_tiles} main tiles exceeds 64 sprite sheet limit!")
+    # Main layer cell byte: (tile_id << 2) | flip bits → max 63 tile IDs
+    main_rt_ids = set(base_rt[1].values()) | set(rot90_rt[1].values())
+    max_main_rt = max(main_rt_ids) if main_rt_ids else 0
+    if max_main_rt > 63:
+        print(f"  WARNING: main layer uses rt_id up to {max_main_rt}, exceeds 63 tile limit!")
+    # BG tiles in user memory: 0x4300-0x5FFF = 7424 bytes, 128 bytes/tile = 58 max
+    num_bg_tiles = num_rt - num_spr_tiles
+    if num_bg_tiles * 128 > 7424:
+        print(f"  WARNING: {num_bg_tiles} BG tiles ({num_bg_tiles*128}b) exceeds user memory (7424b)!")
+
+    def editor_to_cell(L, ti, xf):
+        """Convert editor (tile_id, packed_xform) to cell byte for layer L.
+        BG layer (0): cell = rt_tile_id (no flip bits, max 255 tiles)
+        Main layer (1): cell = (rt_tile_id << 2) | (flip_x << 1) | flip_y (max 63 tiles)
+        Returns 0 for empty."""
+        if ti == 255:
+            return 0
+        rot = xf & 3
+        hflip = bool(xf & 4)
+        vflip = bool(xf & 8)
+        if rot == 0 or rot == 2:
+            rt_id = base_rt[L].get(ti, 0)
+        else:
+            rt_id = rot90_rt[L].get(ti, 0)
+        if rt_id == 0:
+            return 0
+        # BG layer: no flip bits, just tile id
+        if L == 0:
+            return rt_id
+        if rot >= 2:
+            fx = int(not hflip)
+            fy = int(not vflip)
+        else:
+            fx = int(hflip)
+            fy = int(vflip)
+        return (rt_id << 2) | (fx << 1) | fy
 
     # Step 3: Nibble-RLE compress tile pixels
     # Same encoding as character sprites: each byte = (color<<4 | run-1)
@@ -613,49 +841,40 @@ def build_level_data(tileset, map_data):
     print(f"  Tile pixels: {tile_section_size}b compressed"
           f" (from {raw_size}b, {tile_section_size*100//raw_size}%)")
 
-    # Step 4: Build runtime map (2-byte RLE: cell_byte, run_length)
-    # cell_byte: 0 = empty, 1-63 = runtime tile ID
-    map_rle = bytearray()
-    for y in range(map_h):
-        x = 0
-        while x < map_w:
-            ti = map_grid[y][x]
-            xf = xform_grid[y][x]
-            if ti == 255:
-                cell = 0
-            else:
-                packed_xf = xf  # rot | hflip<<2 | vflip<<3
-                rt_id = rt_tile_map.get((ti, packed_xf), 0)
-                cell = rt_id  # 1-based, 0=empty
-            run = 1
-            while x + run < map_w and run < 255:
-                nti = map_grid[y][x + run]
-                nxf = xform_grid[y][x + run]
-                if nti == 255:
-                    ncell = 0
-                else:
-                    ncell = rt_tile_map.get((nti, nxf), 0)
-                if ncell != cell:
-                    break
-                run += 1
-            map_rle.append(cell)
-            map_rle.append(run)
-            x += run
-    print(f"  Map RLE: {len(map_rle)}b")
+    # Step 4: Build cell grids, then auto-encode each layer
+    layer_modes = []
+    layer_data = []
+    for L in range(num_layers):
+        mg = map_grids[L]
+        xg = xform_grids[L]
+        cell_grid = []
+        for y in range(map_h):
+            row = []
+            for x in range(map_w):
+                row.append(editor_to_cell(L, mg[y][x], xg[y][x]))
+            cell_grid.append(row)
+        label = ['BG', 'Main'][L]
+        mode, data, desc = encode_layer(cell_grid, map_w, map_h, label)
+        layer_modes.append(mode)
+        layer_data.append(data)
+        print(f"  Layer {L} ({label}): mode {mode} {desc}")
 
     # Step 5: Pack into __map__ format
-    # Header (11 bytes):
+    # Header (12 + num_layers bytes):
     #   num_tiles:      u8
+    #   num_layers:     u8
     #   map_w:          u16 LE
     #   map_h:          u16 LE
     #   spawn_x:        u16 LE (0xFFFF = none)
     #   spawn_y:        u16 LE (0xFFFF = none)
     #   tile_blob_size: u16 LE
+    #   layer_mode[0..nl-1]: u8 each  (NEW)
     # Then: tile_index (num_tiles * 2 bytes)
     # Then: tile_blob (RLE compressed pixel data)
-    # Then: map_rle (2-byte pairs: cell, run)
+    # Then: layer 0 data, layer 1 data
     header = bytearray()
     header.append(num_rt)
+    header.append(num_layers)
     header.append(map_w & 0xFF)
     header.append((map_w >> 8) & 0xFF)
     header.append(map_h & 0xFF)
@@ -668,12 +887,15 @@ def build_level_data(tileset, map_data):
     header.append((sy >> 8) & 0xFF)
     header.append(len(tile_blob) & 0xFF)
     header.append((len(tile_blob) >> 8) & 0xFF)
+    for m in layer_modes:
+        header.append(m)
 
     map_section = bytearray()
     map_section.extend(header)
     map_section.extend(tile_index)
     map_section.extend(tile_blob)
-    map_section.extend(map_rle)
+    for ld in layer_data:
+        map_section.extend(ld)
 
     total_bytes = len(map_section)
     print(f"  Total __map__: {total_bytes}/4096 bytes ({total_bytes*100//4096}%)")
@@ -682,14 +904,18 @@ def build_level_data(tileset, map_data):
 
     # Step 6: Generate Lua metadata
     gen = []
-    gen.append(f"-- level: {map_w}x{map_h}, {num_rt} tiles, {total_bytes}b")
+    gen.append(f"-- level: {map_w}x{map_h}, {num_rt} tiles, {num_layers} layers, {total_bytes}b")
     gen.append(f"map_base=0x2000")
     gen.append(f"lvl_w={map_w} lvl_h={map_h}")
-    gen.append(f"lvl_nt={num_rt}")
+    gen.append(f"lvl_nt={num_rt} lvl_nl={num_layers} lvl_nst={num_spr_tiles}")
     if spawn_x >= 0:
         gen.append(f"spn_x={spawn_x} spn_y={spawn_y}")
     else:
         gen.append(f"spn_x=0 spn_y=0")
+
+    # Layer parallax (Lua table: 1=bg,2=main,3=fg)
+    px_vals = ",".join(str(p) for p in parallax)
+    gen.append(f"lplx={{{px_vals}}}")
 
     # Tile flags table
     flag_entries = []
@@ -813,15 +1039,17 @@ def build_cart():
     level_gen_lines = []
     map_hex = ""
 
-    print("\nLoading tileset...")
+    print("\nLoading tilesets...")
     tileset = slice_tileset()
-    print(f"  {len(tileset)} unique tiles from tileset")
+    print(f"  {len(tileset)} unique main tiles from tileset")
+    bg_tileset = slice_bg_tileset()
+    print(f"  {len(bg_tileset)} unique BG tiles from bg_tileset")
 
     if os.path.exists(LEVEL_JSON):
         print(f"\nReading level data from {LEVEL_JSON}...")
         map_data = read_level_json(LEVEL_JSON)
         if map_data:
-            map_section, num_rt, tile_flags, level_gen_lines = build_level_data(tileset, map_data)
+            map_section, num_rt, tile_flags, level_gen_lines = build_level_data(tileset, bg_tileset, map_data)
             map_hex = bytes_to_map_hex(map_section)
         else:
             print("  No map data found in JSON, skipping level processing")
