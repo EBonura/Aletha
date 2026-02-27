@@ -46,6 +46,7 @@ vx=0 vy=0
 facing=1
 grounded=true
 prev_by1=0
+air_time=0
 
 -- animation state
 state="idle"
@@ -510,6 +511,7 @@ function land_on(y_top)
  vy=0
  if not grounded then
   grounded=true
+  air_time=0
   if state=="fall" then
    set_anim(a_land)
    state="land"
@@ -759,8 +761,12 @@ function _update60()
 
  -- -- state machine --
  if state=="idle" or state=="run" then
+  -- walked off ledge (wait 4 frames)
+  if not grounded and air_time>4 then
+   set_anim(a_fall)
+   state="fall"
   -- buffered jump
-  if buf_jump>0 and grounded then
+  elseif buf_jump>0 then
    do_jump()
   -- buffered z: start combo
   elseif buf_atk>0 then
@@ -902,6 +908,9 @@ function _update60()
  if not grounded then
   vy+=grav
   if vy>max_fall then vy=max_fall end
+  air_time+=1
+ else
+  air_time=0
  end
 
  -- move X, then resolve X collisions
