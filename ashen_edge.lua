@@ -12,72 +12,43 @@
 combo_chain={a_atk1,a_xslice}
 
 -- anim speeds (frames per anim frame)
-aspd={}
-aspd[a_idle]=6
-aspd[a_run]=5
-aspd[a_jump]=5
-aspd[a_fall]=5
-aspd[a_hit]=5
-aspd[a_land]=2
-aspd[a_atk1]=6
-aspd[a_xslice]=6
-aspd[a_sweep]=4
-aspd[a_death]=6
+-- order: idle,run,jump,fall,hit,land,atk1,xslice,sweep,death
+aspd=split"6,5,5,5,5,2,6,6,4,6"
 
 -- physics
-grav=0.15
-max_fall=3
-jump_spd=-3.5
-run_spd=1.5
-friction=0.8
+grav,max_fall,jump_spd,run_spd,friction=0.15,3,-3.5,1.5,0.8
 
 -- collision box (relative to px,py)
--- px = body center x, py = top of sprite
--- box: x from px+cb_x0 to px+cb_x1
---      y from py+cb_y0 to py+cb_y1
-cb_x0=-3  -- left edge offset from px
-cb_x1=3   -- right edge offset from px
-cb_y0=3   -- top edge offset from py (skip hair)
-cb_y1=19  -- bottom edge = py+cell_h
+-- box: x from px-3 to px+3, y from py+3 to py+19
+cb_x0,cb_x1,cb_y0,cb_y1=-3,3,3,19
 
 -- player state
-px=64 py=0
-vx=0 vy=0
-facing=1
-grounded=true
-prev_by1=0
-air_time=0
+px,py,vx,vy=64,0,0,0
+facing,grounded,prev_by1,air_time=1,true,0,0
 
 -- animation state
 state="idle"
--- states: idle,run,jump,fall,land,
---  attack,sweep
-cur_anim=a_idle
-cur_frame=1
-anim_timer=0
+cur_anim,cur_frame,anim_timer=a_idle,1,0
 
 -- combo state
-combo_idx=0
-combo_queued=false
+combo_idx,combo_queued=0,false
 
 -- input buffer (frames remaining)
-buf_jump=0
-buf_atk=0 -- z buffered
-buf_sweep=0 -- x buffered
-buf_dur=8 -- buffer window (frames)
+buf_jump,buf_atk,buf_sweep=0,0,0
+buf_dur=8
 
 -- attack movement tracking
-atk_anchor0=0 -- anchor at start of attack anim
-atk_px0=0     -- px at start of attack anim
-air_atk=false -- true if attack started in air
+atk_anchor0,atk_px0,air_atk=0,0,false
 
 -- forward push on attack end
-atk_push={}
-atk_push[a_atk1]=4
-atk_push[a_xslice]=6
-atk_push[a_sweep]=0 -- sweep uses anchor drift
+-- order: idle,run,jump,fall,hit,land,atk1,xslice,sweep,death
+atk_push=split"0,0,0,0,0,0,4,6,0,0"
 
 -- -- decoders --
+
+function pk2(a)
+ return peek(a)+peek(a+1)*256
+end
 
 function decode_rle(off,npix)
  local buf={}
@@ -103,11 +74,11 @@ function decode_skip(buf,off)
  local nd=peek(off)
  off+=1
  if nd==255 then
-  nd=peek(off)+peek(off+1)*256
+  nd=pk2(off)
   off+=2
  end
  if nd==0 then return end
- local pos=peek(off)+peek(off+1)*256+1
+ local pos=pk2(off)+1
  off+=2
  buf[pos]=peek(off)
  off+=1
@@ -120,7 +91,7 @@ function decode_skip(buf,off)
    local ext=peek(off)
    off+=1
    if ext==255 then
-    skip=peek(off)+peek(off+1)*256
+    skip=pk2(off)
     off+=2
    else
     skip=15+ext
@@ -134,7 +105,7 @@ end
 function read_anim(a)
  local cb=char_base
  local na=peek(cb)
- local aoff=peek(cb+3+(a-1)*2)+peek(cb+3+(a-1)*2+1)*256
+ local aoff=pk2(cb+3+(a-1)*2)
  local ab=cb+3+na*2+aoff
  local nf=peek(ab)
  local enc=peek(ab+1)
@@ -151,7 +122,7 @@ function read_anim(a)
   local data_off=do_off+nf*2
   local ksz={}
   for i=0,nk-1 do
-   ksz[i]=peek(ks_off+i*2)+peek(ks_off+i*2+1)*256
+   ksz[i]=pk2(ks_off+i*2)
   end
   return {
    enc=0,nf=nf,nk=nk,
@@ -195,14 +166,14 @@ function cache_anims()
     local buf={}
     local kb=kbufs[ki]
     for i=1,#kb do buf[i]=kb[i] end
-    local doff=peek(ai.do_off+(f-1)*2)+peek(ai.do_off+(f-1)*2+1)*256
+    local doff=pk2(ai.do_off+(f-1)*2)
     decode_skip(buf,ai.data_off+doff)
     frames[f]={buf,ai.bx,ai.by,ai.bw,ai.bh}
    end
   else
    -- type 1: decode each frame
    for f=1,ai.nf do
-    local foff=peek(ai.fo_off+(f-1)*2)+peek(ai.fo_off+(f-1)*2+1)*256
+    local foff=pk2(ai.fo_off+(f-1)*2)
     local addr=ai.data_off+foff
     local bx=peek(addr)
     local by=peek(addr+1)
@@ -277,12 +248,6 @@ function tick_anim()
  end
 end
 
-function in_combo_window()
- -- accept input in last 40% of anim
- local nf=anim_nf()
- return cur_frame>=ceil(nf*0.6)
-end
-
 -- -- tile/map system --
 
 -- map buffers: mdat[layer][y*lvl_w+x+1]
@@ -304,11 +269,11 @@ function load_tiles()
  local b=map_base
  local nt=peek(b)
  local nl=peek(b+1)
- local mw=peek(b+2)+peek(b+3)*256
- local mh=peek(b+4)+peek(b+5)*256
- local sx=peek(b+6)+peek(b+7)*256
- local sy=peek(b+8)+peek(b+9)*256
- local tbsz=peek(b+10)+peek(b+11)*256
+ local mw=pk2(b+2)
+ local mh=pk2(b+4)
+ local sx=pk2(b+6)
+ local sy=pk2(b+8)
+ local tbsz=pk2(b+10)
  -- per-layer encoding modes
  local lmode={}
  for i=1,nl do lmode[i]=peek(b+11+i) end
@@ -626,12 +591,8 @@ function draw_main_layer()
  end
 end
 
-function get_visual_x()
- return px
-end
-
 function update_camera()
- local target_x=get_visual_x()-64
+ local target_x=px-64
  local target_y=py-64
  -- clamp to map bounds
  target_x=mid(0,target_x,lvl_w*16-128)
@@ -961,7 +922,7 @@ function _draw()
  -- draw player anchored to body center
  local ax=anc[cur_anim][cur_frame]
  local flip=facing==-1
- local vx=get_visual_x()
+ local vx=px
  local dx
  if flip then
   dx=vx-(cell_w-1-ax)

@@ -940,17 +940,9 @@ def build_level_data(tileset, bg_tileset, map_data):
     px_vals = ",".join(str(p) for p in parallax)
     gen.append(f"lplx={{{px_vals}}}")
 
-    # Tile flags table
-    flag_entries = []
-    for rt_id in range(1, num_rt + 1):
-        f = rt_tile_flags.get(rt_id, 0)
-        if f != 0:
-            flag_entries.append(f"tflg[{rt_id}]={f}")
-    if flag_entries:
-        gen.append("tflg={}")
-        gen.extend(flag_entries)
-    else:
-        gen.append("tflg={}")
+    # Tile flags table — pack as split string
+    flag_vals = ",".join(str(rt_tile_flags.get(rt_id, 0)) for rt_id in range(1, num_rt + 1))
+    gen.append(f'tflg=split"{flag_vals}"')
 
     return map_section, num_rt, rt_tile_flags, gen
 
@@ -1017,25 +1009,6 @@ def build_cart():
         print(f"  (but generating cart anyway for testing)")
 
     gfx = bytes_to_gfx(char_chunk)
-    # Compute per-frame body anchor X (center of dark/body pixels)
-    print("\nComputing body anchors...")
-    anchor_lines = []
-    for ai, (name, fname, _) in enumerate(ANIMS):
-        frames = all_frames[name]
-        centers = []
-        for f in frames:
-            body_xs = []
-            for idx, c in enumerate(f):
-                if c != TRANS and c == 0:  # black = body
-                    body_xs.append(idx % CELL_W)
-            if body_xs:
-                centers.append((min(body_xs) + max(body_xs)) // 2)
-            else:
-                centers.append(15)  # fallback to idle center
-        vals = ",".join(str(c) for c in centers)
-        anchor_lines.append(f"anc[{ai+1}]={{{vals}}}")
-        print(f"    {name}: {centers}")
-
     # Build generated data block
     gen_lines = []
     gen_lines.append(f"-- {total_frames} frames, {num_anims} anims")
@@ -1043,7 +1016,8 @@ def build_cart():
     gen_lines.append(f"char_base=0")
     gen_lines.append(f"cell_w={CELL_W} cell_h={CELL_H}")
     gen_lines.append(f"trans={TRANS}")
-    # anim indices
+    # anim indices — multi-assign to save tokens
+    anim_vars = []
     for ai, (name, fname, _) in enumerate(ANIMS):
         anim_var = {
             "idle": "a_idle", "run": "a_run", "jump": "a_jump",
@@ -1051,10 +1025,24 @@ def build_cart():
             "attack1": "a_atk1", "cross_slice": "a_xslice",
             "sweep": "a_sweep", "death": "a_death",
         }[name]
-        gen_lines.append(f"{anim_var}={ai+1}")
-    # anchor data
-    gen_lines.append("anc={}")
-    gen_lines.extend(anchor_lines)
+        anim_vars.append(anim_var)
+    lhs = ",".join(anim_vars)
+    rhs = ",".join(str(i+1) for i in range(len(ANIMS)))
+    gen_lines.append(f"{lhs}={rhs}")
+
+    # anchor data — pack into split-decoded string
+    # format: "v,v,v|v,v,v|..." with | separating anims
+    anc_parts = []
+    for ai, (name, fname, _) in enumerate(ANIMS):
+        frames = all_frames[name]
+        centers = []
+        for f in frames:
+            body_xs = [idx % CELL_W for idx, c in enumerate(f) if c != TRANS and c == 0]
+            centers.append((min(body_xs) + max(body_xs)) // 2 if body_xs else 15)
+        anc_parts.append(",".join(str(c) for c in centers))
+    anc_str = "|".join(anc_parts)
+    gen_lines.append(f'_a=split("{anc_str}","|",false)')
+    gen_lines.append("anc={} for i=1,#_a do anc[i]=split(_a[i]) end")
 
     generated_block = "\n".join(gen_lines)
 
