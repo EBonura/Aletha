@@ -67,6 +67,7 @@ buf_dur=8 -- buffer window (frames)
 
 -- attack movement tracking
 atk_anchor0=0 -- anchor at start of attack anim
+atk_px0=0     -- px at start of attack anim
 air_atk=false -- true if attack started in air
 
 -- forward push on attack end
@@ -619,28 +620,6 @@ function draw_main_layer()
 end
 
 function get_visual_x()
- -- during attack/sweep, body drifts
- -- from anchor. return visual center.
- if state=="attack" or state=="sweep" then
-  local ax=anc[cur_anim][cur_frame]
-  local drift=ax-atk_anchor0
-  local vx=px+drift*facing
-  -- clamp visual pos against walls
-  local bx0=vx+cb_x0
-  local by0=py+cb_y0
-  local bx1=vx+cb_x1
-  local by1=py+cb_y1
-  if box_hits_solid(bx0,by0,bx1,by1) then
-   if drift*facing>0 then
-    local tx1=flr((bx1-0.01)/16)
-    vx=tx1*16-cb_x1
-   else
-    local tx0=flr(bx0/16)
-    vx=(tx0+1)*16-cb_x0
-   end
-  end
-  return vx
- end
  return px
 end
 
@@ -682,6 +661,7 @@ function start_combo()
  vx=0
  set_anim(combo_chain[1])
  atk_anchor0=anc[combo_chain[1]][1]
+ atk_px0=px
  state="attack"
  buf_atk=0
 end
@@ -690,6 +670,7 @@ function start_sweep()
  vx=0
  set_anim(a_sweep)
  atk_anchor0=anc[a_sweep][1]
+ atk_px0=px
  state="sweep"
  air_atk=false
  buf_sweep=0
@@ -702,33 +683,51 @@ function start_air_atk()
  cur_frame=1
  anim_timer=0
  atk_anchor0=anc[a_xslice][1]
+ atk_px0=px
  state="sweep"
  buf_atk=0
  buf_sweep=0
 end
 
 function try_move_x(dx)
- -- move px by dx, stopping at walls
- px+=dx
- local bx0=px+cb_x0
- local by0=py+cb_y0
- local bx1=px+cb_x1
- local by1=py+cb_y1
- if box_hits_solid(bx0,by0,bx1,by1) then
-  if dx>0 then
-   local tx1=flr((bx1-0.01)/16)
-   px=tx1*16-cb_x1
-  elseif dx<0 then
-   local tx0=flr(bx0/16)
-   px=(tx0+1)*16-cb_x0
+ -- move px by dx, stepping to avoid
+ -- skipping through thin walls
+ local step=cb_x1-cb_x0 -- box width
+ local rem=abs(dx)
+ local dir=1
+ if dx<0 then dir=-1 end
+ while rem>0 do
+  local d=min(rem,step)
+  px+=d*dir
+  rem-=d
+  local bx0=px+cb_x0
+  local by0=py+cb_y0
+  local bx1=px+cb_x1
+  local by1=py+cb_y1
+  if box_hits_solid(bx0,by0,bx1,by1) then
+   if dir>0 then
+    local tx1=flr((bx1-0.01)/16)
+    px=tx1*16-cb_x1
+   else
+    local tx0=flr(bx0/16)
+    px=(tx0+1)*16-cb_x0
+   end
+   return
   end
  end
 end
 
+function apply_atk_drift()
+ -- move px each frame to follow anchor
+ -- drift, with wall collision
+ local ax=anc[cur_anim][cur_frame]
+ local drift=ax-atk_anchor0
+ local target=atk_px0+drift*facing
+ local dx=target-px
+ if dx~=0 then try_move_x(dx) end
+end
+
 function end_attack()
- local drift=anc[cur_anim][cur_frame]
-  -atk_anchor0
- try_move_x(drift*facing)
  local push=atk_push[cur_anim] or 0
  if push~=0 then
   try_move_x(push*facing)
@@ -824,6 +823,7 @@ function _update60()
   end
 
  elseif state=="attack" then
+  apply_atk_drift()
   -- buffer combo input anytime
   if buf_atk>0
    and combo_idx<#combo_chain then
@@ -838,6 +838,7 @@ function _update60()
     combo_queued=false
     set_anim(combo_chain[combo_idx])
     atk_anchor0=anc[combo_chain[combo_idx]][1]
+    atk_px0=px
    else
     combo_idx=0
     set_anim(a_idle)
@@ -846,6 +847,7 @@ function _update60()
   end
 
  elseif state=="sweep" then
+  if not air_atk then apply_atk_drift() end
   -- air atk: allow re-trigger
   if air_atk then
    air_control(lr)
@@ -874,6 +876,7 @@ function _update60()
      vx=0
      set_anim(a_xslice)
      atk_anchor0=anc[a_xslice][1]
+     atk_px0=px
      state="attack"
      buf_atk=0
      buf_sweep=0
