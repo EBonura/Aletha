@@ -148,6 +148,36 @@ def nibble_rle_encode(pixels):
     return out
 
 
+def ext_nibble_rle_encode(pixels):
+    """Extended nibble-RLE: allows runs > 15 via escape byte.
+    Standard: (color << 4) | (run - 1), run 1..15
+    Escape:   (color << 4) | 0xF, then ext_byte, run = 16 + ext_byte (16..271)"""
+    out = bytearray()
+    cur_color = pixels[0]
+    cur_count = 1
+
+    def emit(color, count):
+        while count > 0:
+            if count <= 15:
+                out.append((color << 4) | (count - 1))
+                count = 0
+            else:
+                ext = min(count - 16, 255)
+                out.append((color << 4) | 0xF)
+                out.append(ext)
+                count -= (16 + ext)
+
+    for p in pixels[1:]:
+        if p == cur_color:
+            cur_count += 1
+        else:
+            emit(cur_color, cur_count)
+            cur_color = p
+            cur_count = 1
+    emit(cur_color, cur_count)
+    return out
+
+
 def delta_encode_skip(base_pixels, frame_pixels):
     entries = [(i, frame_pixels[i]) for i in range(len(base_pixels))
                if base_pixels[i] != frame_pixels[i]]
@@ -245,7 +275,7 @@ def encode_kd_with_keys(frames_pixels, key_indices):
         best_k_idx = min(range(nkeys),
                          key=lambda ki: count_diffs(frames_pixels[key_indices[ki]], frames_pixels[i]))
         assignments.append(best_k_idx)
-    key_rles = [nibble_rle_encode(frames_pixels[ki]) for ki in key_indices]
+    key_rles = [ext_nibble_rle_encode(frames_pixels[ki]) for ki in key_indices]
     deltas = []
     for i in range(n):
         base_idx = key_indices[assignments[i]]
@@ -307,7 +337,7 @@ def encode_type1(name, frames_pixels, fw, fh):
             frame_datas.append(bytearray([0, 0, 0, 0]))
         else:
             cropped = crop_pixels(f, fw, bx, by, bw, bh)
-            rle = nibble_rle_encode(cropped)
+            rle = ext_nibble_rle_encode(cropped)
             fd = bytearray([bx, by, bw, bh])
             fd.extend(rle)
             frame_datas.append(fd)
@@ -821,25 +851,20 @@ def build_level_data(tileset, bg_tileset, map_data):
             fy = int(vflip)
         return (rt_id << 2) | (fx << 1) | fy
 
-    # Step 3: Nibble-RLE compress tile pixels
-    # Same encoding as character sprites: each byte = (color<<4 | run-1)
-    # Store offset table so runtime can find each tile's data.
-    tile_rles = []
+    # Step 3: Extended nibble-RLE compress all tile pixels as single blob
+    # Format: (color<<4 | run-1) for runs 1..15
+    #         (color<<4 | 0xF) + ext_byte for runs 16..271
+    # No per-tile offset table needed — decoded sequentially.
+    all_pixels = []
     for pixels in rt_tiles:
-        tile_rles.append(nibble_rle_encode(pixels))
+        all_pixels.extend(pixels)
 
-    # Offset table: 2 bytes per tile (u16 offset from start of tile blob)
-    tile_index = bytearray()
-    tile_blob = bytearray()
-    for rle in tile_rles:
-        tile_index.append(len(tile_blob) & 0xFF)
-        tile_index.append((len(tile_blob) >> 8) & 0xFF)
-        tile_blob.extend(rle)
-
-    tile_section_size = len(tile_index) + len(tile_blob)
+    tile_blob = ext_nibble_rle_encode(all_pixels)
+    old_size = sum(len(nibble_rle_encode(p)) for p in rt_tiles) + num_rt * 2
     raw_size = num_rt * 128
-    print(f"  Tile pixels: {tile_section_size}b compressed"
-          f" (from {raw_size}b, {tile_section_size*100//raw_size}%)")
+    print(f"  Tile pixels: {len(tile_blob)}b compressed"
+          f" (from {raw_size}b, {len(tile_blob)*100//raw_size}%)"
+          f" (old: {old_size}b, saved {old_size - len(tile_blob)}b)")
 
     # Step 4: Build cell grids, then auto-encode each layer
     layer_modes = []
@@ -869,8 +894,7 @@ def build_level_data(tileset, bg_tileset, map_data):
     #   spawn_y:        u16 LE (0xFFFF = none)
     #   tile_blob_size: u16 LE
     #   layer_mode[0..nl-1]: u8 each  (NEW)
-    # Then: tile_index (num_tiles * 2 bytes)
-    # Then: tile_blob (RLE compressed pixel data)
+    # Then: tile_blob (extended RLE compressed pixel data, single blob)
     # Then: layer 0 data, layer 1 data
     header = bytearray()
     header.append(num_rt)
@@ -892,7 +916,6 @@ def build_level_data(tileset, bg_tileset, map_data):
 
     map_section = bytearray()
     map_section.extend(header)
-    map_section.extend(tile_index)
     map_section.extend(tile_blob)
     for ld in layer_data:
         map_section.extend(ld)

@@ -187,6 +187,8 @@ let selDragStart = null;    // {x, y} while dragging new selection
 let clipboard = null;       // {w, h, tiles:[][], xforms:[][]} or null
 let isMovingSelection = false;
 let moveDragStart = null;   // {x, y} tile where move drag began
+let floatingTiles = null;   // captured tiles during selection move
+let floatingXform = null;   // captured xforms during selection move
 let spawnX = -1, spawnY = -1; // tile coords, -1 = not set
 
 let mapXform = [];
@@ -228,7 +230,7 @@ function updateXformStatus() {
   if (curVFlip) parts.push("V");
   document.getElementById("st-xform").textContent = "Xform: " + (parts.length ? parts.join(" ") : "none");
 }
-function clearSelection() { selection = null; selDragStart = null; isMovingSelection = false; moveDragStart = null; }
+function clearSelection() { selection = null; selDragStart = null; isMovingSelection = false; moveDragStart = null; floatingTiles = null; floatingXform = null; }
 function inSelection(tx, ty) { if (!selection) return false; return tx >= selection.x && tx < selection.x + selection.w && ty >= selection.y && ty < selection.y + selection.h; }
 function copySelection() {
   if (!selection) return;
@@ -671,6 +673,33 @@ function render() {
       }
     }
   }
+  // Floating tiles preview during selection move
+  if (floatingTiles && selection) {
+    const s = selection;
+    const lImgs = imagesForLayer(curLayer), lRaw = rawImagesForLayer(curLayer);
+    ctx.save(); ctx.globalAlpha = 0.7;
+    for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) {
+      const ti = floatingTiles[y][x];
+      if (ti !== 255) {
+        const xf = unpackXform(floatingXform[y][x]);
+        const img = lImgs[ti] || lRaw[ti];
+        if (!img) continue;
+        const px = (s.x+x)*ts, py = (s.y+y)*ts;
+        if (xf.rot === 0 && !xf.hflip && !xf.vflip) {
+          ctx.drawImage(img, px, py, ts, ts);
+        } else {
+          ctx.save();
+          ctx.translate(px + ts/2, py + ts/2);
+          if (xf.hflip) ctx.scale(-1, 1);
+          if (xf.vflip) ctx.scale(1, -1);
+          ctx.rotate(xf.rot * Math.PI / 2);
+          ctx.drawImage(img, -ts/2, -ts/2, ts, ts);
+          ctx.restore();
+        }
+      }
+    }
+    ctx.restore();
+  }
   // Selection overlay
   if (selection) {
     const s = selection;
@@ -789,6 +818,12 @@ wrap.addEventListener("mousedown", e => {
   if (e.button===0&&currentTool==="select") {
     if (selection && inSelection(tx, ty)) {
       isMovingSelection = true; moveDragStart = {x: tx, y: ty};
+      // Capture floating tiles and clear original area once
+      pushUndo();
+      const s = selection;
+      floatingTiles = []; floatingXform = [];
+      for (let y = 0; y < s.h; y++) { const tr = new Uint8Array(s.w), xr = new Uint8Array(s.w); for (let x = 0; x < s.w; x++) { const my=s.y+y, mx=s.x+x; if(my>=0&&my<mapH&&mx>=0&&mx<mapW){tr[x]=map[my][mx];xr[x]=mapXform[my][mx];}else{tr[x]=255;xr[x]=0;}} floatingTiles.push(tr);floatingXform.push(xr); }
+      for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) { const my=s.y+y,mx=s.x+x; if(my>=0&&my<mapH&&mx>=0&&mx<mapW){map[my][mx]=255;mapXform[my][mx]=0;} }
     } else {
       clearSelection(); selDragStart = {x: tx, y: ty}; selection = {x: tx, y: ty, w: 1, h: 1};
     }
@@ -822,17 +857,7 @@ wrap.addEventListener("mousemove", e => {
   if (isMovingSelection && moveDragStart && selection) {
     const dx = tx - moveDragStart.x, dy = ty - moveDragStart.y;
     if (dx !== 0 || dy !== 0) {
-      pushUndo();
-      const s = selection;
-      // Copy current tiles
-      const tmpT = [], tmpX = [];
-      for (let y = 0; y < s.h; y++) { const tr = new Uint8Array(s.w), xr = new Uint8Array(s.w); for (let x = 0; x < s.w; x++) { const my=s.y+y, mx=s.x+x; if(my>=0&&my<mapH&&mx>=0&&mx<mapW){tr[x]=map[my][mx];xr[x]=mapXform[my][mx];}else{tr[x]=255;xr[x]=0;}} tmpT.push(tr);tmpX.push(xr); }
-      // Clear old area
-      for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) { const my=s.y+y,mx=s.x+x; if(my>=0&&my<mapH&&mx>=0&&mx<mapW){map[my][mx]=255;mapXform[my][mx]=0;} }
-      // Place at new position
-      const nx = s.x+dx, ny = s.y+dy;
-      for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) { const my=ny+y,mx=nx+x; if(my>=0&&my<mapH&&mx>=0&&mx<mapW){map[my][mx]=tmpT[y][x];mapXform[my][mx]=tmpX[y][x];} }
-      selection = {x: nx, y: ny, w: s.w, h: s.h};
+      selection = {x: selection.x+dx, y: selection.y+dy, w: selection.w, h: selection.h};
       moveDragStart = {x: tx, y: ty};
       render();
     }
@@ -851,7 +876,14 @@ wrap.addEventListener("mousemove", e => {
 });
 wrap.addEventListener("mouseup", e => {
   if (isPanning) { isPanning=false;wrap.style.cursor="crosshair";return; }
-  if (currentTool==="select") { selDragStart=null; isMovingSelection=false; moveDragStart=null; return; }
+  if (currentTool==="select") {
+    if (isMovingSelection && floatingTiles && selection) {
+      const s = selection;
+      for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) { const my=s.y+y,mx=s.x+x; if(my>=0&&my<mapH&&mx>=0&&mx<mapW){map[my][mx]=floatingTiles[y][x];mapXform[my][mx]=floatingXform[y][x];} }
+      render();
+    }
+    selDragStart=null; isMovingSelection=false; moveDragStart=null; floatingTiles=null; floatingXform=null; return;
+  }
   if (isDrawing&&currentTool==="rect") { const [tx,ty]=screenToTile(e.clientX,e.clientY);pushUndo();if(placementMode==="stamp"&&selectedTiles.length>1&&currentTool!=="eraser"){const stamp=getStampTiles();const minX=Math.min(drawStartTX,tx),maxX=Math.max(drawStartTX,tx),minY=Math.min(drawStartTY,ty),maxY=Math.max(drawStartTY,ty);for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++){const s=stamp.find(s=>((x-minX)%Math.max(1,...stamp.map(s=>s.dx+1)))===s.dx&&((y-minY)%Math.max(1,...stamp.map(s=>s.dy+1)))===s.dy);if(s)setTileAt(x,y,s.idx,packXform());}}else if(placementMode==="random"&&selectedTiles.length>1&&currentTool!=="eraser"){const minX=Math.min(drawStartTX,tx),maxX=Math.max(drawStartTX,tx),minY=Math.min(drawStartTY,ty),maxY=Math.max(drawStartTY,ty);for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)setTileAt(x,y,getRandomTile(),packXform());}else{fillRect(drawStartTX,drawStartTY,tx,ty,currentTool==="eraser"?255:getSelectedTile(),currentTool==="eraser"?0:packXform());}render(); }
   isDrawing=false;
 });
@@ -1136,12 +1168,19 @@ function estimateMapMemory() {
   }
 
   function nibbleRLE(pix) {
+    // Extended nibble-RLE: runs 1-15 = 1 byte, runs 16+ = 2 bytes
     let size = 0, cur = pix[0], cnt = 1;
-    for (let i=1; i<pix.length; i++) {
-      if (pix[i] === cur && cnt < 16) { cnt++; }
-      else { size += Math.ceil(cnt/16); cur = pix[i]; cnt = 1; }
+    function emit(c, n) {
+      while (n > 0) {
+        if (n <= 15) { size++; n = 0; }
+        else { const ext = Math.min(n - 16, 255); size += 2; n -= (16 + ext); }
+      }
     }
-    size += Math.ceil(cnt/16);
+    for (let i=1; i<pix.length; i++) {
+      if (pix[i] === cur) { cnt++; }
+      else { emit(cur, cnt); cur = pix[i]; cnt = 1; }
+    }
+    emit(cur, cnt);
     return size;
   }
 
@@ -1260,9 +1299,8 @@ function estimateMapMemory() {
   }
 
   const header = 12 + 2; // +2 for layer mode bytes
-  const tileIndex = numRT * 2;
-  const total = header + tileIndex + tileRLETotal + mapDataSize;
-  return { total, numRT, tileRLETotal, tileIndex, mapRLESize: mapDataSize, header };
+  const total = header + tileRLETotal + mapDataSize;
+  return { total, numRT, tileRLETotal, mapRLESize: mapDataSize, header };
 }
 
 function updateMemEstimate() {

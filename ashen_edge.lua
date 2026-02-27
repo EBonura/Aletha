@@ -87,12 +87,16 @@ function decode_rle(off,npix)
   off+=1
   buf[idx]=b\16
   local cnt=b&15
+  if cnt==15 then
+   cnt=15+peek(off)
+   off+=1
+  end
   for c=1,cnt do
    buf[idx+c]=buf[idx]
   end
   idx+=cnt+1
  end
- return buf
+ return buf,off
 end
 
 function decode_skip(buf,off)
@@ -309,23 +313,24 @@ function load_tiles()
  local lmode={}
  for i=1,nl do lmode[i]=peek(b+11+i) end
 
- -- tile index + blob (shifted by nl mode bytes)
- local tidx=b+12+nl
- local tblob=tidx+nt*2
+ -- tile blob starts after header+mode bytes
+ local tblob=b+12+nl
 
  -- decode ALL data from __map__ into
  -- lua tables before writing to memory
 
- -- 1. decode tile pixel data
+ -- 1. decode all tile pixels as single blob
+ local all_pix,p=decode_rle(tblob,nt*256)
  local tile_pix={}
  for t=0,nt-1 do
-  local off=peek(tidx+t*2)
-       +peek(tidx+t*2+1)*256
-  tile_pix[t]=decode_rle(tblob+off,256)
+  tile_pix[t]={}
+  local base=t*256
+  for i=1,256 do
+   tile_pix[t][i]=all_pix[base+i]
+  end
  end
 
  -- 2. decode each layer's map data
- local p=tblob+tbsz
  for L=1,nl do
   mdat[L]={}
   for i=1,sz do mdat[L][i]=0 end
