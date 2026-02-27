@@ -1,8 +1,8 @@
--- assassin platformer
+-- ashen edge
 -- color 14 = transparent
 
 --##generated##
--- (replaced by assassin_build.py)
+-- (replaced by build.py)
 -- char_base, cell_w, cell_h, trans
 -- anim indices, anchor data
 --##end##

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Builds a PICO-8 .p8 cart from the Assassin sprite sheets and level data.
-Vertical strip PNGs, 91x19 cells, 4 source colors → 3 PICO-8 colors.
+Ashen Edge build script.
+Builds a PICO-8 .p8 cart from sprite sheets and level data.
+Vertical strip PNGs, 91x19 cells, 4 source colors -> 3 PICO-8 colors.
 Two encoding types per animation (picks smaller):
   Type 0 (KD): keyframe+delta with animation-wide bbox
   Type 1 (PF): per-frame independent RLE with per-frame bboxes
 
 Level pipeline:
-  Reads editor map from assassin.p8 __map__ section (editor RLE format).
+  Reads level_data.json (map, flags, transforms).
   Slices tileset PNG, deduplicates, applies color remap.
   Flattens rotation transforms into pre-rendered tiles.
   Packs compressed tile pixels + map data into __map__ of output cart.
@@ -19,7 +20,7 @@ from itertools import combinations
 
 ASSET_DIR = "/tmp/assets/All 3 Sprites/assassin"
 DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_P8 = os.path.join(DIR, "assassin.p8")
+OUTPUT_P8 = os.path.join(DIR, "ashen_edge.p8")
 LEVEL_JSON = os.path.join(DIR, "level_data.json")
 TRANS = 14  # transparency color index
 CELL_W, CELL_H = 91, 19
@@ -718,7 +719,7 @@ def bytes_to_map_hex(data):
 # ── Build ──
 
 def build_cart():
-    print("Loading assassin sprite sheets...")
+    print("Loading sprite sheets...")
     print(f"  Cell size: {CELL_W}x{CELL_H}")
 
     print("\nExtracting frames...")
@@ -830,7 +831,7 @@ def build_cart():
         generated_block += "\n" + "\n".join(level_gen_lines)
 
     # Read game lua, inject generated data
-    game_lua_path = os.path.join(DIR, "assassin_game.lua")
+    game_lua_path = os.path.join(DIR, "ashen_edge.lua")
     with open(game_lua_path) as f:
         game_lua = f.read()
 
