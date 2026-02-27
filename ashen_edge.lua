@@ -25,8 +25,9 @@ aspd[a_sweep]=4
 aspd[a_death]=6
 
 -- physics
-grav=0.3
-jump_spd=-5
+grav=0.15
+max_fall=3
+jump_spd=-3.5
 run_spd=1.5
 friction=0.8
 
@@ -551,7 +552,6 @@ function draw_bg_layer()
  local md=mdat[1]
  if not md then return end
  local plx=lplx[1]
- -- floor to even pixel for byte alignment
  local cx=flr(cam_x*plx)\2*2
  local cy=flr(cam_y*plx)
  local ts=16
@@ -650,9 +650,9 @@ function update_camera()
  -- clamp to map bounds
  target_x=mid(0,target_x,lvl_w*16-128)
  target_y=mid(0,target_y,lvl_h*16-128)
- -- smooth follow
- cam_x+=(target_x-cam_x)*0.15
- cam_y+=(target_y-cam_y)*0.15
+ -- smooth follow, round to whole pixels
+ cam_x+=flr((target_x-cam_x)*0.15+0.5)
+ cam_y+=flr((target_y-cam_y)*0.15+0.5)
 end
 
 -- -- game --
@@ -898,6 +898,7 @@ function _update60()
  prev_by1=py+cb_y1
  if not grounded then
   vy+=grav
+  if vy>max_fall then vy=max_fall end
  end
 
  -- move X, then resolve X collisions
