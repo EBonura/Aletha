@@ -26,8 +26,8 @@ TRANS = 14  # transparency color index
 CELL_W, CELL_H = 91, 19
 
 # ── Tileset config ──
-TILESET_PNG = os.path.join(DIR, "assets", "tileset", "DARK Edition Tileset No background.png")
-BG_TILESET_PNG = os.path.join(DIR, "bg_tileset.png")
+TILESET_PNG = os.path.join(DIR, "assets", "tileset", "fg_tileset.png")
+BG_TILESET_PNG = os.path.join(DIR, "assets", "tileset", "bg_tileset.png")
 DOOR_PNG = os.path.join(DIR, "assets", "door", "door open 41x48.png")
 SWITCH_START_PNG = os.path.join(DIR, "assets", "save", "start up16x19.png")
 SWITCH_IDLE_PNG = os.path.join(DIR, "assets", "save", "idle 16x19.png")

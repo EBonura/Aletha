@@ -2,5 +2,4 @@ __pycache__/
 *.pyc
 ashen_edge.p8
 migrate_to_json.py
-bg_tileset.png
 assets/
