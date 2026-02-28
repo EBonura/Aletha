@@ -199,6 +199,7 @@ cur_frame=1
 frame_timer=0
 frame_spd=8
 do_flip=false
+blink_t=0
 
 -- spider screen position
 spx=56
@@ -243,6 +244,7 @@ function _update()
  if btnp(4) then
   do_flip=not do_flip
  end
+ blink_t+=1
  frame_timer+=1
  if frame_timer>=frame_spd then
   frame_timer=0
@@ -291,6 +293,11 @@ function _draw()
   dx=spx-ax
  end
  draw_char(cur_anim,cur_frame,dx,spy,do_flip)
+ -- antenna blink (idle only)
+ if cur_anim==a_spi and blink_t%20<10 then
+  local ax=do_flip and 7 or 8
+  pset(dx+ax,spy+12,8)
+ end
 
  -- projectiles
  for p in all(projs) do
