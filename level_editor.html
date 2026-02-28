@@ -82,6 +82,7 @@ body { background: #1d2b53; color: #fff; font-family: monospace; display: flex; 
     <div style="display:flex;gap:4px;margin-bottom:6px;">
       <button class="ent-type-btn active" data-etype="1" style="background:#ff6600;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Door</button>
       <button class="ent-type-btn" data-etype="2" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Switch</button>
+      <button class="ent-type-btn" data-etype="3" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Spider</button>
     </div>
     <div id="entity-props" style="display:none;">
       <label style="font-size:11px">Group: <input type="number" id="entity-group" min="1" max="255" value="1"
@@ -209,8 +210,9 @@ let dragObjStart = null;     // {x, y} tile at drag start
 
 // Entity system
 const ENT_TYPES = [
-  { id: 1, name: "Door",   w: 1, h: 3, color: "#ff6600" },
-  { id: 2, name: "Switch", w: 1, h: 1, color: "#00ff88" }
+  { id: 1, name: "Door",   w: 1, h: 3, color: "#ff6600", hasGroup: true },
+  { id: 2, name: "Switch", w: 1, h: 1, color: "#00ff88", hasGroup: true },
+  { id: 3, name: "Spider", w: 1, h: 1, color: "#ff004d", hasGroup: false }
 ];
 let entities = [];
 let selectedEntity = null;
@@ -956,18 +958,21 @@ wrap.addEventListener("mousedown", e => {
       isDraggingEntity = clickedIdx;
       dragObjStart = {x: tx, y: ty};
       pushUndo();
-      document.getElementById("entity-group").value = entities[clickedIdx].group;
-      document.getElementById("entity-props").style.display = "";
       const ent = entities[clickedIdx];
       const ett = ENT_TYPES.find(t => t.id === ent.type);
-      document.getElementById("entity-info").textContent = `${ett.name} at ${ent.x},${ent.y} group ${ent.group}`;
+      document.getElementById("entity-group").value = ent.group;
+      document.getElementById("entity-group").closest("label").style.display = ett.hasGroup ? "" : "none";
+      document.getElementById("entity-props").style.display = "";
+      document.getElementById("entity-info").textContent = ett.hasGroup ? `${ett.name} at ${ent.x},${ent.y} group ${ent.group}` : `${ett.name} at ${ent.x},${ent.y}`;
     } else if (inBounds(tx, ty)) {
       pushUndo();
-      entities.push({ type: entityPlaceType, x: tx, y: ty, group: 1 });
+      const grp = et.hasGroup ? 1 : 0;
+      entities.push({ type: entityPlaceType, x: tx, y: ty, group: grp });
       selectedEntity = entities.length - 1;
-      document.getElementById("entity-group").value = 1;
+      document.getElementById("entity-group").value = grp;
+      document.getElementById("entity-group").closest("label").style.display = et.hasGroup ? "" : "none";
       document.getElementById("entity-props").style.display = "";
-      document.getElementById("entity-info").textContent = `${et.name} at ${tx},${ty} group 1`;
+      document.getElementById("entity-info").textContent = et.hasGroup ? `${et.name} at ${tx},${ty} group 1` : `${et.name} at ${tx},${ty}`;
     }
     render(); return;
   }

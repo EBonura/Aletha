@@ -65,6 +65,14 @@ atk_push=split"0,0,0,0,0,0,4,6,0,0"
 parts={} -- particle pool
 gems=0   -- collected count
 
+-- player HP
+plr_hp=3
+
+-- spider projectiles
+sprojs={}
+-- spider anim speeds: idle,walk,attack,hit,death
+sp_aspd=split"8,6,5,5,6"
+
 -- entity system
 ents={}
 ent_grp={}
@@ -899,6 +907,16 @@ function init_ents()
    -- switch: off = idle frame 1
    e.anim=a_sid e.frame=1
    e.state=0 e.cooldown=0
+  elseif e.type==3 then
+   -- spider
+   e.x=e.tx*16 e.y=e.ty*16
+   e.facing=1
+   e.anim=a_spi e.frame=1
+   e.state="idle"
+   e.anim_t=0 e.hp=3
+   e.atk_cd=0 e.fired=false
+   e.inv_t=0 e.vy=0
+   e.patrol_t=60 e.walk_count=0
   end
  end
 end
@@ -958,6 +976,154 @@ function check_atk_ents()
    if ax1>sx and ax0<sx+16
     and ay1>sy and ay0<sy+16 then
     toggle_switch(e)
+   end
+  elseif e.type==3 and e.hp>0
+   and e.state~="death" and e.inv_t==0 then
+   if ax1>e.x and ax0<e.x+16
+    and ay1>e.y and ay0<e.y+16 then
+    e.hp-=1
+    e.inv_t=20
+    if e.hp<=0 then
+     e.state="death"
+     sp_set_anim(e,a_spd)
+    else
+     e.state="hit"
+     sp_set_anim(e,a_sph)
+    end
+   end
+  end
+ end
+end
+
+function sp_set_anim(e,a)
+ if e.anim~=a then
+  e.anim=a e.frame=1 e.anim_t=0
+ end
+end
+
+function update_spider(e)
+ -- gravity runs in all states (including death)
+ e.vy=min(e.vy+grav,max_fall)
+ e.y+=e.vy
+ if box_hits_solid(e.x+2,e.y+14,e.x+14,e.y+16) then
+  e.y=flr((e.y+16-0.01)/16)*16-16
+  e.vy=0
+ end
+
+ -- death: tick anim only, no AI
+ if e.state=="death" then
+  e.anim_t+=1
+  local as=sp_aspd[e.anim-a_spi+1] or 6
+  if e.anim_t>=as then
+   e.anim_t=0
+   local nf=acache[e.anim].ai.nf
+   if e.frame<nf then e.frame+=1 end
+  end
+  return
+ end
+
+ if e.inv_t>0 then e.inv_t-=1 end
+ if e.atk_cd>0 then e.atk_cd-=1 end
+
+ -- tick animation
+ e.anim_t+=1
+ local as=sp_aspd[e.anim-a_spi+1] or 6
+ if e.anim_t>=as then
+  e.anim_t=0
+  local nf=acache[e.anim].ai.nf
+  if e.state=="hit" then
+   if e.frame<nf then e.frame+=1
+   else
+    e.patrol_t=60
+    e.state="idle" sp_set_anim(e,a_spi)
+   end
+  elseif e.state=="attack" then
+   if e.frame==3 and not e.fired then
+    e.fired=true
+    local dir=e.facing
+    local sx=e.x+8+dir*4
+    local sy=e.y
+    local vx=dir*2
+    local ddx=px-sx
+    local ddy=py+8-sy
+    local t=ddx/vx
+    local vy=0
+    if t>1 then
+     vy=mid(-5,(ddy-0.1*t*t)/t,4)
+    else
+     vy=-2
+    end
+    add(sprojs,{x=sx,y=sy,dx=vx,dy=vy,exp=false,et=0})
+   end
+   if e.frame<nf then e.frame+=1
+   else
+    e.atk_cd=180
+    e.fired=false
+    e.patrol_t=60
+    e.state="idle" sp_set_anim(e,a_spi)
+   end
+  elseif e.state=="walk" then
+   e.frame=e.frame%nf+1
+  end
+ end
+
+ -- spot player: check every frame, overrides patrol
+ if (e.state=="idle" or e.state=="walk") and e.atk_cd==0 then
+  local ddx=px-e.x
+  local ddy=py-e.y
+  if abs(ddx)<80 and abs(ddy)<32 then
+   e.facing=ddx>0 and 1 or -1
+   e.state="attack" sp_set_anim(e,a_spa)
+   return
+  end
+ end
+
+ -- patrol: idle <-> walk loop
+ e.patrol_t-=1
+ if e.state=="idle" then
+  if e.patrol_t<=0 then
+   e.walk_count+=1
+   if e.walk_count%2==0 then e.facing=-e.facing end
+   e.patrol_t=120
+   e.state="walk" sp_set_anim(e,a_spw)
+  end
+ elseif e.state=="walk" then
+  local nx=e.x+e.facing*0.5
+  if box_hits_solid(nx+2,e.y,nx+14,e.y+16) then
+   -- wall: go idle early
+   e.patrol_t=60
+   e.state="idle" sp_set_anim(e,a_spi)
+  else
+   e.x=nx
+   if e.patrol_t<=0 then
+    e.patrol_t=60
+    e.state="idle" sp_set_anim(e,a_spi)
+   end
+  end
+ end
+end
+
+function update_sprojs()
+ for p in all(sprojs) do
+  if p.exp then
+   p.et+=1
+   if p.et>12 then del(sprojs,p) end
+  else
+   p.x+=p.dx
+   p.y+=p.dy
+   p.dy+=0.2
+   -- wall collision
+   if box_hits_solid(p.x-2,p.y-2,p.x+2,p.y+2) then
+    p.exp=true p.et=0
+   -- player collision
+   elseif p.x>px+cb_x0 and p.x<px+cb_x1
+    and p.y>py+cb_y0 and p.y<py+cb_y1 then
+    p.exp=true p.et=0
+    plr_hp-=1
+   -- off screen
+   elseif p.x<cam_x-8 or p.x>cam_x+136
+    or p.y<cam_y-8 or p.y>cam_y+136 then
+    del(sprojs,p)
    end
   end
  end
@@ -1022,6 +1188,8 @@ function update_ents()
     end
    end
   end
+  -- spider
+  if e.type==3 then update_spider(e) end
  end
 end
 
@@ -1066,10 +1234,44 @@ end
 
 function draw_ents()
  for e in all(ents) do
-  local sx=e.tx*16-cam_x
-  local sy=e.ty*16-cam_y
-  if e.type==1 then sx-=16 end
-  draw_ent(e.anim,e.frame,sx,sy)
+  if e.type==3 then
+   local sx=e.x-cam_x
+   local sy=e.y-cam_y
+   local flip=e.facing==-1
+   local ax=(sp_anc[e.anim] and sp_anc[e.anim][e.frame]) or spider_cw\2
+   local dx
+   if flip then
+    dx=sx-(spider_cw-1-ax)
+   else
+    dx=sx-ax
+   end
+   draw_char(e.anim,e.frame,dx,sy,flip)
+   -- antenna blink during idle
+   if e.anim==a_spi and (e.anim_t\4)%2==0 then
+    local bx=flip and 7 or 8
+    pset(dx+bx,sy+12,8)
+   end
+  else
+   local sx=e.tx*16-cam_x
+   local sy=e.ty*16-cam_y
+   if e.type==1 then sx-=16 end
+   draw_ent(e.anim,e.frame,sx,sy)
+  end
+ end
+end
+
+function draw_sprojs()
+ for p in all(sprojs) do
+  local px,py=flr(p.x)-cam_x,flr(p.y)-cam_y
+  if p.exp then
+   local r=p.et*2
+   circ(px,py,r,7)
+   if r>3 then circ(px,py,r-3,10) end
+   if r>6 then circfill(px,py,r-6,9) end
+  else
+   circfill(px,py,2,10)
+   circfill(px,py,1,7)
+  end
  end
 end
 
@@ -1295,6 +1497,7 @@ function _update60()
 
  -- update entities & particles
  update_ents()
+ update_sprojs()
  update_parts()
 
  -- update camera
@@ -1338,8 +1541,9 @@ function _draw()
  draw_bg_layer()
  draw_main_layer()
 
- -- draw entities
+ -- draw entities and projectiles
  draw_ents()
+ draw_sprojs()
 
  -- draw player anchored to body center
  local acw=acache[cur_anim].cw

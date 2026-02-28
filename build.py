@@ -1330,7 +1330,8 @@ def build_cart():
     }
     sp_vars = [sp_var_map[name] for name, _, _ in SPIDER_ANIMS]
     sp_lhs = ",".join(sp_vars)
-    sp_rhs = ",".join(str(i+1) for i in range(len(SPIDER_ANIMS)))
+    sp_base_idx = num_main + 3  # after a_title, a_font
+    sp_rhs = ",".join(str(sp_base_idx + i) for i in range(len(SPIDER_ANIMS)))
     gen_lines.append(f"{sp_lhs}={sp_rhs}")
     gen_lines.append(f"spider_base={spider_base_addr} spider_cw={SPIDER_W} spider_ch={SPIDER_H}")
     gen_lines.append(f"spider_data={bytes_to_p8_str(spider_chunk)}")
