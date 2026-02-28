@@ -1301,7 +1301,7 @@ function draw_title()
  p8print(t1,64-tw\2,10,8,-3)
  -- blinking prompt
  if (time()*2)%2<1 then
-  local t2="PRESS X"
+  local t2="Press X"
   local pw=#t2*font_cw+(#t2-1)*-3
   p8print(t2,64-pw\2,108,6,-3)
  end
