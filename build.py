@@ -34,6 +34,15 @@ SWITCH_IDLE_PNG = os.path.join(DIR, "assets", "save", "idle 16x19.png")
 SWITCH_DOWN_PNG = os.path.join(DIR, "assets", "save", "down 16x19.png")
 TITLE_PNG = os.path.join(DIR, "assets", "title", "title.png")
 ALKHEMIKAL_TTF = os.path.join(DIR, "assets", "fonts", "alkhemikal_src.ttf")
+SPIDER_DIR = os.path.join(DIR, "assets", "spider")
+SPIDER_W, SPIDER_H = 16, 16
+SPIDER_ANIMS = [
+    ("sp_idle",   "idle.png",                          None),
+    ("sp_walk",   "walk.png",                          None),
+    ("sp_attack", ["prep_attack.png", "attack.png"],   [None, 2]),
+    ("sp_hit",    "hit.png",                           None),
+    ("sp_death",  "death.png",                         None),
+]
 FONT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()"
 TILE_SIZE = 16
 TILESET_COLS = 18
@@ -114,6 +123,27 @@ def extract_frames(img_path, nframes=None):
         pixels = []
         for y in range(CELL_H):
             for x in range(CELL_W):
+                r, g, b, a = img.getpixel((x, y0 + y))
+                if a == 0:
+                    pixels.append(TRANS)
+                else:
+                    pixels.append(nearest_p8(r, g, b))
+        frames.append(pixels)
+    return frames
+
+
+def extract_frames_custom(img_path, asset_dir, cw, ch, nframes=None):
+    """Extract frames from a vertical strip PNG with custom cell size and asset dir."""
+    img = Image.open(os.path.join(asset_dir, img_path)).convert("RGBA")
+    w, h = img.size
+    if nframes is None:
+        nframes = h // ch
+    frames = []
+    for f in range(nframes):
+        y0 = f * ch
+        pixels = []
+        for y in range(ch):
+            for x in range(cw):
                 r, g, b, a = img.getpixel((x, y0 + y))
                 if a == 0:
                     pixels.append(TRANS)
@@ -1183,6 +1213,50 @@ def build_cart():
     print(f"  title_chunk: {len(title_chunk)}b  font_chunk: {len(font_chunk)}b")
     print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x}")
 
+    # ── Spider enemy ──
+    print("\nExtracting spider frames...")
+    spider_anim_blocks = []
+    spider_all_frames = {}
+    for sp_name, sp_file, sp_nf in SPIDER_ANIMS:
+        if isinstance(sp_file, list):
+            frames = []
+            for f, n in zip(sp_file, sp_nf):
+                frames += extract_frames_custom(f, SPIDER_DIR, SPIDER_W, SPIDER_H, n)
+        else:
+            frames = extract_frames_custom(sp_file, SPIDER_DIR, SPIDER_W, SPIDER_H, sp_nf)
+        spider_all_frames[sp_name] = frames
+        block, info = encode_animation(sp_name, frames, SPIDER_W, SPIDER_H)
+        spider_anim_blocks.append((sp_name, block))
+        total_frames += len(frames)
+        print(info)
+    # pack into a multi-anim chunk
+    sp_na = len(spider_anim_blocks)
+    sp_offsets = []
+    sp_data = bytearray()
+    for _, blk in spider_anim_blocks:
+        sp_offsets.append(len(sp_data))
+        sp_data.extend(blk)
+    spider_chunk = bytearray()
+    spider_chunk.append(sp_na)
+    spider_chunk.append(SPIDER_W)
+    spider_chunk.append(SPIDER_H)
+    for off in sp_offsets:
+        spider_chunk.append(off & 0xFF)
+        spider_chunk.append((off >> 8) & 0xFF)
+    spider_chunk.extend(sp_data)
+    spider_base_addr = 0x4300 + len(title_chunk) + len(font_chunk)
+    print(f"  spider_chunk: {len(spider_chunk)}b  base=0x{spider_base_addr:04x}")
+    # per-frame horizontal center of non-transparent pixels (for draw anchoring)
+    sp_anc_parts = []
+    for sp_name, _, _ in SPIDER_ANIMS:
+        frames = spider_all_frames[sp_name]
+        centers = []
+        for f in frames:
+            xs = [idx % SPIDER_W for idx, c in enumerate(f) if c != TRANS]
+            centers.append((min(xs) + max(xs)) // 2 if xs else SPIDER_W // 2)
+        sp_anc_parts.append(",".join(str(c) for c in centers))
+    sp_anc_str = "|".join(sp_anc_parts)
+
     # Rebuild char_chunk with all animations (player + entity)
     num_anims = len(anim_blocks)
     anim_offsets = []
@@ -1249,6 +1323,19 @@ def build_cart():
     gen_lines.append(f"title_data={bytes_to_p8_str(title_chunk)}")
     gen_lines.append(f"font_data={bytes_to_p8_str(font_chunk)}")
     gen_lines.append(f"font_cw={font_cw} font_ch={font_ch}")
+    # spider — code string, multi-anim chunk at spider_base
+    sp_var_map = {
+        "sp_idle": "a_spi", "sp_walk": "a_spw",
+        "sp_attack": "a_spa", "sp_hit": "a_sph", "sp_death": "a_spd",
+    }
+    sp_vars = [sp_var_map[name] for name, _, _ in SPIDER_ANIMS]
+    sp_lhs = ",".join(sp_vars)
+    sp_rhs = ",".join(str(i+1) for i in range(len(SPIDER_ANIMS)))
+    gen_lines.append(f"{sp_lhs}={sp_rhs}")
+    gen_lines.append(f"spider_base={spider_base_addr} spider_cw={SPIDER_W} spider_ch={SPIDER_H}")
+    gen_lines.append(f"spider_data={bytes_to_p8_str(spider_chunk)}")
+    gen_lines.append(f'_sa=split("{sp_anc_str}","|",false)')
+    gen_lines.append("sp_anc={} for i=1,#_sa do sp_anc[a_spi+i-1]=split(_sa[i]) end")
     # font lookup table: char code -> frame index (1-based)
     font_map_entries = ",".join(f"[{ord(c)}]={i+1}" for i, c in enumerate(FONT_CHARS))
     gen_lines.append(f"font_map={{{font_map_entries}}}")
@@ -1328,5 +1415,389 @@ __gfx__
     print(f"\nWrote cart: {OUTPUT_P8}")
 
 
+SPIDER_TEST_P8 = os.path.join(DIR, "spider_test.p8")
+
+SPIDER_TEST_LUA = r"""
+function pk2(a) return peek(a)|(peek(a+1)<<8) end
+
+acache={}
+
+function decode_rle(off,npix,bpp)
+ bpp=bpp or 4
+ local run_bits=8-bpp
+ local run_mask=(1<<run_bits)-1
+ local color_mask=(1<<bpp)-1
+ local buf={}
+ local idx=1
+ while idx<=npix do
+  local b=peek(off)
+  off+=1
+  local color=(b>>run_bits)&color_mask
+  local r=b&run_mask
+  if r==run_mask then
+   r=run_mask+1+peek(off)
+   off+=1
+  else
+   r=r+1
+  end
+  for i=0,r-1 do buf[idx+i]=color end
+  idx+=r
+ end
+ return buf,off
+end
+
+function decode_skip(buf,off)
+ local nd=peek(off)
+ off+=1
+ if nd==255 then
+  nd=pk2(off)
+  off+=2
+ end
+ if nd==0 then return end
+ local pos=pk2(off)+1
+ off+=2
+ buf[pos]=peek(off)
+ off+=1
+ for i=2,nd do
+  local b=peek(off)
+  off+=1
+  local skip=b\16
+  local col=b&15
+  if skip==15 then
+   local ext=peek(off)
+   off+=1
+   if ext==255 then
+    skip=pk2(off)
+    off+=2
+   else
+    skip=15+ext
+   end
+  end
+  pos+=skip+1
+  buf[pos]=col
+ end
+end
+
+function read_anim(a,cb)
+ local na=peek(cb)
+ local aoff=pk2(cb+3+(a-1)*2)
+ local ab=cb+3+na*2+aoff
+ local nf=peek(ab)
+ local enc=peek(ab+1)
+ local bpp=peek(ab+2)
+ local np=bpp<4 and (1<<bpp) or 0
+ local pal={}
+ for i=0,np-1 do
+  local b=peek(ab+3+flr(i/2))
+  pal[i+1]=(i%2==0) and ((b>>4)&0xf) or (b&0xf)
+ end
+ local pal_bytes=flr((np+1)/2)
+ local h=ab+3+pal_bytes
+ if enc==0 then
+  local nk=peek(h)
+  local bx=peek(h+1)
+  local by=peek(h+2)
+  local bw=peek(h+3)
+  local bh=peek(h+4)
+  local ki_off=h+5
+  local ks_off=ki_off+nk
+  local as_off=ks_off+nk*2
+  local do_off=as_off+nf
+  local data_off=do_off+nf*2
+  local ksz={}
+  for i=0,nk-1 do
+   ksz[i]=pk2(ks_off+i*2)
+  end
+  return {
+   enc=0,nf=nf,nk=nk,
+   bpp=bpp,pal=pal,
+   bx=bx,by=by,bw=bw,bh=bh,
+   ki_off=ki_off,ks_off=ks_off,
+   as_off=as_off,do_off=do_off,
+   data_off=data_off,ksz=ksz
+  }
+ else
+  local fo_off=h
+  local data_off=fo_off+nf*2
+  return {
+   enc=1,nf=nf,
+   bpp=bpp,pal=pal,
+   fo_off=fo_off,data_off=data_off
+  }
+ end
+end
+
+function decode_anim(ai)
+ local frames={}
+ if ai.enc==0 then
+  local npix=ai.bw*ai.bh
+  local kbufs={}
+  local koff=ai.data_off
+  for i=0,ai.nk-1 do
+   kbufs[i]=decode_rle(koff,npix,ai.bpp)
+   koff+=ai.ksz[i]
+  end
+  for f=1,ai.nf do
+   local ki=peek(ai.as_off+f-1)
+   local buf={}
+   local kb=kbufs[ki]
+   for i=1,#kb do buf[i]=kb[i] end
+   local doff=pk2(ai.do_off+(f-1)*2)
+   decode_skip(buf,ai.data_off+doff)
+   frames[f]={buf,ai.bx,ai.by,ai.bw,ai.bh}
+  end
+ else
+  for f=1,ai.nf do
+   local foff=pk2(ai.fo_off+(f-1)*2)
+   local addr=ai.data_off+foff
+   local bx=peek(addr)
+   local by=peek(addr+1)
+   local bw=peek(addr+2)
+   local bh=peek(addr+3)
+   if bw==0 or bh==0 then
+    frames[f]={{},0,0,0,0}
+   else
+    local buf=decode_rle(addr+4,bw*bh,ai.bpp)
+    frames[f]={buf,bx,by,bw,bh}
+   end
+  end
+ end
+ if ai.bpp<4 and #ai.pal>0 then
+  for f=1,#frames do
+   local buf=frames[f][1]
+   for i=1,#buf do
+    buf[i]=ai.pal[buf[i]+1] or trans
+   end
+  end
+ end
+ return frames
+end
+
+function get_frame(a,f)
+ local fr=acache[a].frames[f]
+ return fr[1],fr[2],fr[3],fr[4],fr[5]
+end
+
+function draw_char(a,f,sx,sy,flip)
+ local buf,bx,by,bw,bh=get_frame(a,f)
+ if bw==0 then return end
+ local acw=acache[a].cw
+ local idx=1
+ for y=0,bh-1 do
+  for x=0,bw-1 do
+   local col=buf[idx]
+   if col~=trans then
+    local dx
+    if flip then
+     dx=acw-1-bx-x
+    else
+     dx=bx+x
+    end
+    pset(sx+dx,sy+by+y,col)
+   end
+   idx+=1
+  end
+ end
+end
+
+-- body anim names (indices 1..5, sp_proj=6 not shown)
+anim_names={"idle","walk","attack","hit","death"}
+cur_anim=1
+cur_frame=1
+frame_timer=0
+frame_spd=8
+do_flip=false
+
+-- spider screen position
+spx=56
+spy=88
+floor_y=108
+
+-- projectile state
+projs={}
+proj_vx=2
+proj_vy=-4
+proj_grav=0.2
+fired=false
+
+function _init()
+ palt(0,false)
+ palt(trans,true)
+ local p=spider_base
+ for i=1,#spider_data do poke(p,ord(spider_data,i)) p+=1 end
+ local sna=peek(spider_base)
+ for a=1,sna do
+  local ai=read_anim(a,spider_base)
+  acache[a]={ai=ai,frames=decode_anim(ai),cw=spider_cw,ch=spider_ch}
+ end
+end
+
+function _update()
+ local prev_frame=cur_frame
+ if btnp(0) then
+  cur_anim-=1
+  if cur_anim<1 then cur_anim=#anim_names end
+  cur_frame=1
+  frame_timer=0
+  fired=false
+ end
+ if btnp(1) then
+  cur_anim+=1
+  if cur_anim>#anim_names then cur_anim=1 end
+  cur_frame=1
+  frame_timer=0
+  fired=false
+ end
+ if btnp(4) then
+  do_flip=not do_flip
+ end
+ frame_timer+=1
+ if frame_timer>=frame_spd then
+  frame_timer=0
+  local nf=acache[cur_anim].ai.nf
+  cur_frame=cur_frame%nf+1
+ end
+
+ -- spawn projectile on attack frame 4 (first true attack frame)
+ if cur_anim==a_spa and cur_frame==4 and prev_frame~=4 and not fired then
+  fired=true
+  local dir=do_flip and -1 or 1
+  local sx=spx+4+dir*4
+  local sy=spy
+  add(projs,{x=sx,y=sy,dx=dir*proj_vx,dy=proj_vy,exp=false,et=0})
+ end
+ if cur_anim~=a_spa then fired=false end
+
+ -- update projectiles
+ for p in all(projs) do
+  if p.exp then
+   p.et+=1
+   if p.et>12 then del(projs,p) end
+  else
+   p.x+=p.dx
+   p.y+=p.dy
+   p.dy+=proj_grav
+   if p.x<0 or p.x>127 or p.y<0 or p.y>floor_y then
+    p.exp=true p.et=0
+   end
+  end
+ end
+end
+
+function _draw()
+ cls(5)
+ -- floor
+ rectfill(0,floor_y,127,127,1)
+ line(0,floor_y-1,127,floor_y-1,13)
+
+ -- spider
+ local ax=(sp_anc[cur_anim] and sp_anc[cur_anim][cur_frame]) or spider_cw\2
+ local dx
+ if do_flip then
+  dx=spx-(spider_cw-1-ax)
+ else
+  dx=spx-ax
+ end
+ draw_char(cur_anim,cur_frame,dx,spy,do_flip)
+
+ -- projectiles
+ for p in all(projs) do
+  local px,py=flr(p.x),flr(p.y)
+  if p.exp then
+   local r=p.et*2
+   circ(px,py,r,7)
+   if r>3 then circ(px,py,r-3,10) end
+   if r>6 then circfill(px,py,r-6,9) end
+  else
+   -- small glowing energy ball
+   circfill(px,py,2,10)
+   circfill(px,py,1,7)
+  end
+ end
+
+ local nf=acache[cur_anim].ai.nf
+ print(anim_names[cur_anim].." "..cur_frame.."/"..nf,2,2,7)
+ print("\x8d\x8e anim  z:flip",2,120,6)
+end
+"""
+
+def build_spider_test():
+    print("=== Building spider_test.p8 ===")
+
+    print("\nExtracting spider frames...")
+    spider_anim_blocks = []
+    spider_all_frames = {}
+    for sp_name, sp_file, sp_nf in SPIDER_ANIMS:
+        if isinstance(sp_file, list):
+            frames = []
+            for f, n in zip(sp_file, sp_nf):
+                frames += extract_frames_custom(f, SPIDER_DIR, SPIDER_W, SPIDER_H, n)
+        else:
+            frames = extract_frames_custom(sp_file, SPIDER_DIR, SPIDER_W, SPIDER_H, sp_nf)
+        spider_all_frames[sp_name] = frames
+        block, info = encode_animation(sp_name, frames, SPIDER_W, SPIDER_H)
+        spider_anim_blocks.append((sp_name, block))
+        print(info)
+
+    # Pack into multi-anim chunk (base = 0x4300, no title/font in test cart)
+    sp_na = len(spider_anim_blocks)
+    sp_offsets = []
+    sp_data = bytearray()
+    for _, blk in spider_anim_blocks:
+        sp_offsets.append(len(sp_data))
+        sp_data.extend(blk)
+    spider_chunk = bytearray()
+    spider_chunk.append(sp_na)
+    spider_chunk.append(SPIDER_W)
+    spider_chunk.append(SPIDER_H)
+    for off in sp_offsets:
+        spider_chunk.append(off & 0xFF)
+        spider_chunk.append((off >> 8) & 0xFF)
+    spider_chunk.extend(sp_data)
+    spider_base_addr = 0x4300
+    print(f"  spider_chunk: {len(spider_chunk)}b  base=0x{spider_base_addr:04x}")
+
+    # Per-frame horizontal anchor
+    sp_anc_parts = []
+    for sp_name, _, _ in SPIDER_ANIMS:
+        frames = spider_all_frames[sp_name]
+        centers = []
+        for f in frames:
+            xs = [idx % SPIDER_W for idx, c in enumerate(f) if c != TRANS]
+            centers.append((min(xs) + max(xs)) // 2 if xs else SPIDER_W // 2)
+        sp_anc_parts.append(",".join(str(c) for c in centers))
+    sp_anc_str = "|".join(sp_anc_parts)
+
+    # Build generated block
+    gen_lines = []
+    gen_lines.append(f"trans={TRANS}")
+    sp_var_map = {
+        "sp_idle": "a_spi", "sp_walk": "a_spw",
+        "sp_attack": "a_spa", "sp_hit": "a_sph", "sp_death": "a_spd",
+    }
+    sp_vars = [sp_var_map[name] for name, _, _ in SPIDER_ANIMS]
+    gen_lines.append(",".join(sp_vars) + "=" + ",".join(str(i+1) for i in range(len(SPIDER_ANIMS))))
+    gen_lines.append(f"spider_base={spider_base_addr} spider_cw={SPIDER_W} spider_ch={SPIDER_H}")
+    gen_lines.append(f"spider_data={bytes_to_p8_str(spider_chunk)}")
+    gen_lines.append(f'_sa=split("{sp_anc_str}","|",false)')
+    gen_lines.append("sp_anc={} for i=1,#_sa do sp_anc[a_spi+i-1]=split(_sa[i]) end")
+    generated_block = "\n".join(gen_lines)
+
+    lua_code = f"--##generated##\n{generated_block}\n--##end##\n{SPIDER_TEST_LUA}"
+
+    p8 = f"""pico-8 cartridge // http://www.pico-8.com
+version 42
+__lua__
+{lua_code}
+"""
+    with open(SPIDER_TEST_P8, "w") as f:
+        f.write(p8)
+    print(f"\nWrote cart: {SPIDER_TEST_P8}")
+
+
 if __name__ == "__main__":
-    build_cart()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "spider_test":
+        build_spider_test()
+    else:
+        build_cart()

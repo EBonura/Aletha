@@ -184,6 +184,7 @@ function read_anim(a,cb)
 end
 
 acache={}
+sp_anc={}
 
 function decode_anim(ai)
  local frames={}
@@ -237,17 +238,26 @@ function cache_anims()
  for i=1,#title_data do poke(p,ord(title_data,i)) p+=1 end
  p=font_base
  for i=1,#font_data do poke(p,ord(font_data,i)) p+=1 end
+ p=spider_base
+ for i=1,#spider_data do poke(p,ord(spider_data,i)) p+=1 end
  -- decode main anims from gfx memory
  local na=peek(char_base)
  for a=1,na do
   local ai=read_anim(a,char_base)
-  acache[a]={ai=ai,frames=decode_anim(ai)}
+  acache[a]={ai=ai,frames=decode_anim(ai),cw=cell_w,ch=cell_h}
  end
  -- decode title and font from code strings (via RAM copy)
  local ai=read_anim(1,title_base)
- acache[a_title]={ai=ai,frames=decode_anim(ai)}
+ acache[a_title]={ai=ai,frames=decode_anim(ai),cw=128,ch=128}
  ai=read_anim(1,font_base)
- acache[a_font]={ai=ai,frames=decode_anim(ai)}
+ acache[a_font]={ai=ai,frames=decode_anim(ai),cw=font_cw,ch=font_ch}
+ -- decode spider anims from code string
+ local sna=peek(spider_base)
+ for a=1,sna do
+  ai=read_anim(a,spider_base)
+  local idx=a_spi+a-1
+  acache[idx]={ai=ai,frames=decode_anim(ai),cw=spider_cw,ch=spider_ch}
+ end
 end
 
 function get_frame(a,f)
@@ -258,6 +268,7 @@ end
 function draw_char(a,f,sx,sy,flip)
  local buf,bx,by,bw,bh=get_frame(a,f)
  if bw==0 then return end
+ local acw=acache[a].cw
  local idx=1
  for y=0,bh-1 do
   for x=0,bw-1 do
@@ -265,7 +276,7 @@ function draw_char(a,f,sx,sy,flip)
    if col~=trans then
     local dx
     if flip then
-     dx=cell_w-1-bx-x
+     dx=acw-1-bx-x
     else
      dx=bx+x
     end
@@ -1331,12 +1342,15 @@ function _draw()
  draw_ents()
 
  -- draw player anchored to body center
- local ax=anc[cur_anim][cur_frame]
+ local acw=acache[cur_anim].cw
+ local ax=(sp_anc[cur_anim] and sp_anc[cur_anim][cur_frame])
+       or (anc[cur_anim] and anc[cur_anim][cur_frame])
+       or acw\2
  local flip=facing==-1
  local vx=px
  local dx
  if flip then
-  dx=vx-(cell_w-1-ax)
+  dx=vx-(acw-1-ax)
  else
   dx=vx-ax
  end
