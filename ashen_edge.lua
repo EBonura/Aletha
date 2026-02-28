@@ -846,7 +846,7 @@ function ent_solid(tx,ty)
   if e.type==1
    and (e.state==0 or e.state==3)
   then
-   if tx>=e.tx and tx<e.tx+3
+   if tx==e.tx
     and ty>=e.ty and ty<e.ty+3 then
     return true
    end
@@ -859,11 +859,11 @@ function toggle_switch(e)
  if e.cooldown>0 then return end
  e.cooldown=30
  if e.state==0 then
-  -- off -> activating
-  e.state=1 e.anim=a_sst e.frame=1
+  -- off -> activating (press down)
+  e.state=1 e.anim=a_sdn e.frame=1
  elseif e.state==2 then
-  -- on -> deactivating
-  e.state=3 e.anim=a_sdn e.frame=1
+  -- on -> deactivating (pop back up)
+  e.state=3 e.anim=a_sst e.frame=1
  end
  -- trigger linked doors
  local grp=ent_grp[e.group]
@@ -910,22 +910,23 @@ function update_ents()
   -- switch animation
   if e.type==2 then
    if e.state==1 then
-    -- activating: play sw_start
-    e.anim_t=(e.anim_t or 0)+1
-    if e.anim_t>=aspd[a_sst] then
-     e.anim_t=0
-     if e.frame<acache[a_sst].ai.nf then
-      e.frame+=1
-     else
-      e.state=2 e.anim=a_sid e.frame=1
-     end
-    end
-   elseif e.state==3 then
-    -- deactivating: play sw_down
+    -- activating: play sw_down (press)
     e.anim_t=(e.anim_t or 0)+1
     if e.anim_t>=aspd[a_sdn] then
      e.anim_t=0
      if e.frame<acache[a_sdn].ai.nf then
+      e.frame+=1
+     else
+      -- on: hold last frame of down
+      e.state=2 e.frame=acache[a_sdn].ai.nf
+     end
+    end
+   elseif e.state==3 then
+    -- deactivating: play sw_start (pop up)
+    e.anim_t=(e.anim_t or 0)+1
+    if e.anim_t>=aspd[a_sst] then
+     e.anim_t=0
+     if e.frame<acache[a_sst].ai.nf then
       e.frame+=1
      else
       e.state=0 e.anim=a_sid e.frame=1
@@ -981,6 +982,7 @@ function draw_ents()
  for e in all(ents) do
   local sx=e.tx*16-cam_x
   local sy=e.ty*16-cam_y
+  if e.type==1 then sx-=16 end
   draw_ent(e.anim,e.frame,sx,sy)
  end
 end

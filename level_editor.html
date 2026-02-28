@@ -209,7 +209,7 @@ let dragObjStart = null;     // {x, y} tile at drag start
 
 // Entity system
 const ENT_TYPES = [
-  { id: 1, name: "Door",   w: 3, h: 3, color: "#ff6600" },
+  { id: 1, name: "Door",   w: 1, h: 3, color: "#ff6600" },
   { id: 2, name: "Switch", w: 1, h: 1, color: "#00ff88" }
 ];
 let entities = [];
@@ -676,8 +676,8 @@ function render() {
     if (L === 1 && spawnX >= 0 && spawnY >= 0) {
       const sx = spawnX * ts, sy = spawnY * ts;
       ctx.strokeStyle = "#0f0"; ctx.lineWidth = 2;
-      ctx.strokeRect(sx+1, sy+1, ts-2, ts*3-2);
-      ctx.fillStyle = "rgba(0,255,0,0.2)"; ctx.fillRect(sx+1, sy+1, ts-2, ts*3-2);
+      ctx.strokeRect(sx+1, sy+1, ts-2, ts*2-2);
+      ctx.fillStyle = "rgba(0,255,0,0.2)"; ctx.fillRect(sx+1, sy+1, ts-2, ts*2-2);
       ctx.fillStyle = "#0f0"; ctx.font = Math.max(8, ts*0.4) + "px monospace";
       ctx.textAlign = "center"; ctx.textBaseline = "bottom";
       ctx.fillText("SPAWN", sx+ts/2, sy-2);
@@ -924,8 +924,8 @@ wrap.addEventListener("mousedown", e => {
       dragObjStart = {x: tx, y: ty};
       render(); return;
     }
-    // Check if clicking on spawn point (1 wide x 3 tall)
-    if (spawnX >= 0 && tx === spawnX && ty >= spawnY && ty < spawnY + 3) {
+    // Check if clicking on spawn point (1 wide x 2 tall)
+    if (spawnX >= 0 && tx === spawnX && ty >= spawnY && ty < spawnY + 2) {
       pushUndo();
       isDraggingSpawn = true;
       dragObjStart = {x: tx, y: ty};
@@ -1065,7 +1065,8 @@ wrap.addEventListener("wheel", e => {
   if (e.deltaY<0) zoom=Math.min(6,zoom*1.15); else zoom=Math.max(0.5,zoom/1.15);
   if (zoom!==oldZoom) { const rect=wrap.getBoundingClientRect();const mx=e.clientX-rect.left;const my=e.clientY-rect.top;const s=zoom/oldZoom;panX=mx-s*(mx-panX);panY=my-s*(my-panY);render(); }
 }, {passive:false});
-wrap.addEventListener("contextmenu", e => e.preventDefault());
+wrap.addEventListener("contextmenu", e => { e.preventDefault(); isDrawing=false; render(); });
+wrap.addEventListener("mouseleave", () => { isDrawing=false; });
 
 // Keyboard
 document.addEventListener("keydown", e => {
