@@ -11,9 +11,12 @@
 -- attack1 -> cross_slice
 combo_chain={a_atk1,a_xslice}
 
+-- game state: 0=title, 1=play
+gs=0
+
 -- anim speeds (frames per anim frame)
--- order: idle,run,jump,fall,hit,land,atk1,xslice,sweep,death,door,sw_start,sw_idle,sw_down
-aspd=split"6,5,5,5,5,2,6,6,4,6,6,6,6,8"
+-- order: idle,run,jump,fall,hit,land,atk1,xslice,sweep,death,door,sw_start,sw_idle,sw_down,title
+aspd=split"6,5,5,5,5,2,6,6,4,6,6,6,6,8,30"
 
 -- physics
 grav,max_fall,jump_spd,run_spd,friction=0.15,3,-3.5,1.5,0.8
@@ -988,6 +991,10 @@ function draw_ents()
 end
 
 function _update60()
+ if gs==0 then
+  if btnp(4) or btnp(5) then gs=1 end
+  return
+ end
  local lr=0
  if btn(0) then lr=-1 end
  if btn(1) then lr=1 end
@@ -1197,7 +1204,23 @@ function _update60()
  tick_anim()
 end
 
+function draw_title()
+ local buf,bx,by,bw,bh=get_frame(a_title,1)
+ if bw==0 then return end
+ local idx=1
+ for y=0,bh-1 do
+  for x=0,bw-1 do
+   pset(bx+x,by+y,buf[idx])
+   idx+=1
+  end
+ end
+end
+
 function _draw()
+ if gs==0 then
+  draw_title()
+  return
+ end
  cls(1)
 
  -- bg + main layers

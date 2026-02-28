@@ -32,6 +32,7 @@ DOOR_PNG = os.path.join(DIR, "assets", "door", "door open 41x48.png")
 SWITCH_START_PNG = os.path.join(DIR, "assets", "save", "start up16x19.png")
 SWITCH_IDLE_PNG = os.path.join(DIR, "assets", "save", "idle 16x19.png")
 SWITCH_DOWN_PNG = os.path.join(DIR, "assets", "save", "down 16x19.png")
+TITLE_PNG = os.path.join(DIR, "assets", "title", "title.png")
 TILE_SIZE = 16
 TILESET_COLS = 18
 TILESET_ROWS = 16
@@ -1051,12 +1052,16 @@ def build_cart():
     sw_down_frames = extract_horiz_frames(SWITCH_DOWN_PNG, 16, 19, 16, 19)
     print(f"    sw_down: {len(sw_down_frames)} frames from {os.path.basename(SWITCH_DOWN_PNG)}")
 
+    title_frames = extract_horiz_frames(TITLE_PNG, 128, 128, 128, 128, nframes=1)
+    print(f"    title: 1 frame from {os.path.basename(TITLE_PNG)}")
+
     print("\nCompressing entity animations...")
     ent_anim_info = [
         ("door",     door_frames,     48, 48),
         ("sw_start", sw_start_frames, 16, 19),
         ("sw_idle",  sw_idle_frames,  16, 19),
         ("sw_down",  sw_down_frames,  16, 19),
+        ("title",    title_frames,   128, 128),
     ]
     for ent_name, ent_frames, ent_cw, ent_ch in ent_anim_info:
         block, info = encode_animation(ent_name, ent_frames, ent_cw, ent_ch)
@@ -1118,6 +1123,7 @@ def build_cart():
     ent_var_map = {
         "door": "a_door", "sw_start": "a_sst",
         "sw_idle": "a_sid", "sw_down": "a_sdn",
+        "title": "a_title",
     }
     ent_vars = [ent_var_map[name] for name, _, _, _ in ent_anim_info]
     ent_lhs = ",".join(ent_vars)
