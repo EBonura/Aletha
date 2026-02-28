@@ -155,24 +155,28 @@ def nibble_rle_encode(pixels):
     return out
 
 
-def ext_nibble_rle_encode(pixels):
-    """Extended nibble-RLE: allows runs > 15 via escape byte.
-    Standard: (color << 4) | (run - 1), run 1..15
-    Escape:   (color << 4) | 0xF, then ext_byte, run = 16 + ext_byte (16..271)"""
+def ext_nibble_rle_encode(pixels, bpp=4):
+    """Unified bpp-aware RLE: byte = (color << run_bits) | (run-1).
+    run_bits = 8 - bpp. Escape when run-1 == run_mask: next byte = ext,
+    actual run = (run_mask+1) + ext.
+    bpp=4: run_bits=4, identical to old nibble-RLE behavior."""
+    run_bits = 8 - bpp
+    run_mask = (1 << run_bits) - 1
+    max_run = run_mask  # max run-1 before escape
     out = bytearray()
     cur_color = pixels[0]
     cur_count = 1
 
     def emit(color, count):
         while count > 0:
-            if count <= 15:
-                out.append((color << 4) | (count - 1))
+            if count <= max_run:
+                out.append((color << run_bits) | (count - 1))
                 count = 0
             else:
-                ext = min(count - 16, 255)
-                out.append((color << 4) | 0xF)
+                ext = min(count - (run_mask + 1), 255)
+                out.append((color << run_bits) | run_mask)
                 out.append(ext)
-                count -= (16 + ext)
+                count -= (run_mask + 1 + ext)
 
     for p in pixels[1:]:
         if p == cur_color:
@@ -274,7 +278,7 @@ def pick_keyframes_candidates(frames_pixels):
     return candidates
 
 
-def encode_kd_with_keys(frames_pixels, key_indices):
+def encode_kd_with_keys(frames_pixels, key_indices, bpp=4):
     n = len(frames_pixels)
     nkeys = len(key_indices)
     assignments = []
@@ -282,7 +286,7 @@ def encode_kd_with_keys(frames_pixels, key_indices):
         best_k_idx = min(range(nkeys),
                          key=lambda ki: count_diffs(frames_pixels[key_indices[ki]], frames_pixels[i]))
         assignments.append(best_k_idx)
-    key_rles = [ext_nibble_rle_encode(frames_pixels[ki]) for ki in key_indices]
+    key_rles = [ext_nibble_rle_encode(frames_pixels[ki], bpp) for ki in key_indices]
     deltas = []
     for i in range(n):
         base_idx = key_indices[assignments[i]]
@@ -295,6 +299,24 @@ def encode_kd_with_keys(frames_pixels, key_indices):
         delta_offsets.append(len(data))
         data.extend(d)
     return key_rles, assignments, delta_offsets, data
+
+
+def min_bpp_for_frames(frames):
+    """Return minimum bpp needed to represent all colors in frames."""
+    n = len(set(c for f in frames for c in f))
+    return 1 if n <= 2 else 2 if n <= 4 else 3 if n <= 8 else 4
+
+
+def build_palette(frames, bpp):
+    """Build minimal palette of size 2^bpp. TRANS at index 0."""
+    colors = set(c for f in frames for c in f)
+    pal = [TRANS] if TRANS in colors else []
+    colors.discard(TRANS)
+    pal += sorted(colors)
+    size = 1 << bpp
+    while len(pal) < size:
+        pal.append(0)
+    return pal[:size]
 
 
 def pack_palette(palette):
@@ -330,7 +352,7 @@ def encode_type0(name, frames_pixels, fw, fh, bpp=4, palette=None):
     best_block = None
     best_info = ""
     for key_indices in candidates:
-        key_rles, assignments, delta_offsets, data = encode_kd_with_keys(cropped, key_indices)
+        key_rles, assignments, delta_offsets, data = encode_kd_with_keys(cropped, key_indices, bpp)
         nkeys = len(key_indices)
         block = bytearray()
         block.append(n)
@@ -374,7 +396,7 @@ def encode_type1(name, frames_pixels, fw, fh, bpp=4, palette=None):
             cropped = crop_pixels(f, fw, bx, by, bw, bh)
             if bpp < 4 and palette:
                 cropped = quantize_pixels(cropped, palette)
-            rle = ext_nibble_rle_encode(cropped)
+            rle = ext_nibble_rle_encode(cropped, bpp)
             fd = bytearray([bx, by, bw, bh])
             fd.extend(rle)
             frame_datas.append(fd)
@@ -396,11 +418,14 @@ def encode_type1(name, frames_pixels, fw, fh, bpp=4, palette=None):
 
 # ── Pick best encoding per animation ──
 
-def encode_animation(name, frames_pixels, fw, fh, bpp=4, palette=None):
+def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
+    if bpp == 'auto':
+        bpp = min_bpp_for_frames(frames_pixels)
+        palette = build_palette(frames_pixels, bpp) if bpp < 4 else None
     n = len(frames_pixels)
     kd_block, kd_info = encode_type0(name, frames_pixels, fw, fh, bpp, palette)
     pf_block, pf_info = encode_type1(name, frames_pixels, fw, fh, bpp, palette)
-    bpp_tag = f" {bpp}bpp" if bpp < 4 else ""
+    bpp_tag = f" [{bpp}bpp]"
     if len(pf_block) < len(kd_block):
         info = f"    {name:12s}: {n:2d}f, PF {len(pf_block)}b (kd={len(kd_block)}b){bpp_tag}"
         return pf_block, info
@@ -1116,17 +1141,16 @@ def build_cart():
     print(f"    alkhemikal: {len(font_frames)} chars, cell {font_cw}x{font_ch}")
 
     print("\nCompressing entity animations...")
-    # Tuple: (name, frames, cell_w, cell_h, bpp, palette)
     ent_anim_info = [
-        ("door",     door_frames,     48,      48,      4, None),
-        ("sw_start", sw_start_frames, 16,      19,      4, None),
-        ("sw_idle",  sw_idle_frames,  16,      19,      4, None),
-        ("sw_down",  sw_down_frames,  16,      19,      4, None),
-        ("title",    title_frames,   128,     128,      4, None),
-        ("font",     font_frames,    font_cw, font_ch,  4, None),
+        ("door",     door_frames,     48,      48),
+        ("sw_start", sw_start_frames, 16,      19),
+        ("sw_idle",  sw_idle_frames,  16,      19),
+        ("sw_down",  sw_down_frames,  16,      19),
+        ("title",    title_frames,   128,     128),
+        ("font",     font_frames,    font_cw, font_ch),
     ]
-    for ent_name, ent_frames, ent_cw, ent_ch, ent_bpp, ent_pal in ent_anim_info:
-        block, info = encode_animation(ent_name, ent_frames, ent_cw, ent_ch, ent_bpp, ent_pal)
+    for ent_name, ent_frames, ent_cw, ent_ch in ent_anim_info:
+        block, info = encode_animation(ent_name, ent_frames, ent_cw, ent_ch)
         anim_blocks.append((ent_name, block))
         total_frames += len(ent_frames)
         print(info)
@@ -1191,7 +1215,7 @@ def build_cart():
     # font lookup table: char code -> frame index (1-based)
     font_map_entries = ",".join(f"[{ord(c)}]={i+1}" for i, c in enumerate(FONT_CHARS))
     gen_lines.append(f"font_map={{{font_map_entries}}}")
-    ent_vars = [ent_var_map[name] for name, _, _, _, _, _ in ent_anim_info]
+    ent_vars = [ent_var_map[name] for name, _, _, _ in ent_anim_info]
     ent_lhs = ",".join(ent_vars)
     ent_rhs = ",".join(str(len(ANIMS) + i + 1) for i in range(len(ent_anim_info)))
     gen_lines.append(f"{ent_lhs}={ent_rhs}")

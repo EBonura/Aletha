@@ -75,22 +75,25 @@ function pk2(a)
  return peek(a)+peek(a+1)*256
 end
 
-function decode_rle(off,npix)
+function decode_rle(off,npix,bpp)
+ bpp=bpp or 4
+ local run_bits=8-bpp
+ local run_mask=(1<<run_bits)-1
  local buf={}
  local idx=1
  while idx<=npix do
   local b=peek(off)
   off+=1
-  buf[idx]=b\16
-  local cnt=b&15
-  if cnt==15 then
-   cnt=15+peek(off)
+  local color=b>>run_bits
+  local r=b&run_mask
+  if r==run_mask then
+   r=run_mask+1+peek(off)
    off+=1
+  else
+   r=r+1
   end
-  for c=1,cnt do
-   buf[idx+c]=buf[idx]
-  end
-  idx+=cnt+1
+  for i=0,r-1 do buf[idx+i]=color end
+  idx+=r
  end
  return buf,off
 end
@@ -195,7 +198,7 @@ function cache_anims()
    local kbufs={}
    local koff=ai.data_off
    for i=0,ai.nk-1 do
-    kbufs[i]=decode_rle(koff,npix)
+    kbufs[i]=decode_rle(koff,npix,ai.bpp)
     koff+=ai.ksz[i]
    end
    -- decode every frame now
@@ -220,7 +223,7 @@ function cache_anims()
     if bw==0 or bh==0 then
      frames[f]={{},0,0,0,0}
     else
-     local buf=decode_rle(addr+4,bw*bh)
+     local buf=decode_rle(addr+4,bw*bh,ai.bpp)
      frames[f]={buf,bx,by,bw,bh}
     end
    end
