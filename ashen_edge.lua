@@ -81,6 +81,27 @@ function decode_rle(off,npix)
  return buf,off
 end
 
+function decode_rle2(off,npix,pal,nbits)
+ local buf={} local idx=1
+ local sh=8-nbits
+ local xv=(1<<sh)-1
+ while idx<=npix do
+  local b=peek(off) off+=1
+  local ci=b>>sh
+  local cf=band(b,xv)
+  local cnt
+  if cf==xv then
+   cnt=xv+1+peek(off) off+=1
+  else
+   cnt=cf+1
+  end
+  local col=pal[ci]
+  for i=0,cnt-1 do buf[idx+i]=col end
+  idx+=cnt
+ end
+ return buf
+end
+
 function decode_skip(buf,off)
  local nd=peek(off)
  off+=1
@@ -142,13 +163,28 @@ function read_anim(a)
    as_off=as_off,do_off=do_off,
    data_off=data_off,ksz=ksz
   }
- else
+ elseif enc==1 then
   local fo_off=ab+2
   local data_off=fo_off+nf*2
   return {
    enc=1,nf=nf,
    fo_off=fo_off,data_off=data_off
   }
+ elseif enc==2 then
+  -- enc==2: palette + bit-packed RLE
+  local nbits=peek(ab+2)
+  local nc=peek(ab+3)
+  local pal={}
+  for i=0,nc-1 do pal[i]=peek(ab+4+i) end
+  local fo_off=ab+4+nc
+  local data_off=fo_off+nf*2
+  return {
+   enc=2,nf=nf,nbits=nbits,pal=pal,
+   fo_off=fo_off,data_off=data_off
+  }
+ else
+  -- enc==3: tile dedup (single frame)
+  return {enc=3,nf=1,ab=ab}
  end
 end
 
@@ -181,8 +217,8 @@ function cache_anims()
     decode_skip(buf,ai.data_off+doff)
     frames[f]={buf,ai.bx,ai.by,ai.bw,ai.bh}
    end
-  else
-   -- type 1: decode each frame
+  elseif ai.enc==1 then
+   -- type 1: per-frame 4bpp RLE
    for f=1,ai.nf do
     local foff=pk2(ai.fo_off+(f-1)*2)
     local addr=ai.data_off+foff
@@ -197,6 +233,53 @@ function cache_anims()
      frames[f]={buf,bx,by,bw,bh}
     end
    end
+  elseif ai.enc==2 then
+   -- type 2: palette + bit-packed RLE
+   for f=1,ai.nf do
+    local foff=pk2(ai.fo_off+(f-1)*2)
+    local addr=ai.data_off+foff
+    local bx=peek(addr)
+    local by=peek(addr+1)
+    local bw=peek(addr+2)
+    local bh=peek(addr+3)
+    if bw==0 or bh==0 then
+     frames[f]={{},0,0,0,0}
+    else
+     local buf=decode_rle2(addr+4,bw*bh,ai.pal,ai.nbits)
+     frames[f]={buf,bx,by,bw,bh}
+    end
+   end
+  else
+   -- type 3: tile dedup
+   local p=ai.ab+2
+   local tw=peek(p) local th=peek(p+1)
+   local tcols=peek(p+2) local trows=peek(p+3)
+   local nbits=peek(p+4) local nc=peek(p+5) p+=6
+   local pal={} for i=0,nc-1 do pal[i]=peek(p+i) end p+=nc
+   local nu=peek(p) local tdsz=pk2(p+1) p+=3
+   local to_base=p p+=nu*2
+   local td_base=p p+=tdsz
+   local im_base=p
+   local tpix=tw*th
+   local tiles={}
+   for i=0,nu-1 do
+    local off=pk2(to_base+i*2)
+    tiles[i]=decode_rle2(td_base+off,tpix,pal,nbits)
+   end
+   local iw=tcols*tw local ih=trows*th
+   local buf={}
+   for tr=0,trows-1 do
+    for tc=0,tcols-1 do
+     local ti=peek(im_base+tr*tcols+tc)
+     local tile=tiles[ti]
+     for ty=0,th-1 do
+      for tx=0,tw-1 do
+       buf[(tr*th+ty)*iw+tc*tw+tx+1]=tile[ty*tw+tx+1]
+      end
+     end
+    end
+   end
+   frames[1]={buf,0,0,iw,ih}
   end
   acache[a]={ai=ai,frames=frames}
  end

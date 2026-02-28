@@ -359,18 +359,183 @@ def encode_type1(name, frames_pixels, fw, fh):
     return block, "PF"
 
 
+# ── Type 2: Palette + bit-packed RLE ──
+
+def get_animation_palette(frames_pixels):
+    """Return sorted list of unique color indices used across all frames."""
+    colors = set()
+    for f in frames_pixels:
+        colors.update(f)
+    return sorted(colors)
+
+
+def encode_bit_rle(indices, nbits):
+    """Encode local palette indices as bit-packed RLE.
+    1bpp: byte=(idx<<7)|(count-1) for count 1..127; (idx<<7)|127 + ext for 128..383
+    2bpp: byte=(idx<<6)|(count-1) for count 1..63;  (idx<<6)|63  + ext for 64..319
+    3bpp: byte=(idx<<5)|(count-1) for count 1..31;  (idx<<5)|31  + ext for 32..287
+    """
+    if not indices:
+        return bytearray()
+    shift = 8 - nbits
+    max_normal = (1 << shift) - 1   # 127, 63, or 31
+    out = bytearray()
+    cur = indices[0]
+    count = 1
+
+    def emit(idx, cnt):
+        while cnt > 0:
+            if cnt <= max_normal:
+                out.append((idx << shift) | (cnt - 1))
+                cnt = 0
+            else:
+                ext = min(cnt - max_normal - 1, 255)
+                out.append((idx << shift) | (max_normal - 1 + 1))  # extension trigger
+                out.append(ext)
+                cnt -= (max_normal + 1 + ext)
+
+    for v in indices[1:]:
+        if v == cur:
+            count += 1
+        else:
+            emit(cur, count)
+            cur = v
+            count = 1
+    emit(cur, count)
+    return out
+
+
+def encode_type2_pbits(name, frames_pixels, fw, fh):
+    """Type 2: Per-frame palette-indexed bit-packed RLE.
+    Chooses minimum bit depth: 1bpp (≤2 colors), 2bpp (≤4), 3bpp (≤8).
+    Falls back to a sentinel block if 4bpp would be needed."""
+    palette = get_animation_palette(frames_pixels)
+    nc = len(palette)
+    if nc <= 2:
+        nbits = 1
+    elif nc <= 4:
+        nbits = 2
+    elif nc <= 8:
+        nbits = 3
+    else:
+        return bytearray(b'\xff' * 32768), "PB(skip)"
+
+    c2i = {c: i for i, c in enumerate(palette)}
+    frame_datas = []
+    for f in frames_pixels:
+        bx, by, bw, bh = get_frame_bbox(f, fw, fh)
+        if bw == 0 or bh == 0:
+            frame_datas.append(bytearray([0, 0, 0, 0]))
+        else:
+            cropped = crop_pixels(f, fw, bx, by, bw, bh)
+            indices = [c2i[c] for c in cropped]
+            rle = encode_bit_rle(indices, nbits)
+            fd = bytearray([bx, by, bw, bh])
+            fd.extend(rle)
+            frame_datas.append(fd)
+
+    block = bytearray()
+    block.append(len(frames_pixels))
+    block.append(2)  # enc type 2
+    block.append(nbits)
+    block.append(nc)
+    for c in palette:
+        block.append(c)
+    offset = 0
+    for fd in frame_datas:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(fd)
+    for fd in frame_datas:
+        block.extend(fd)
+    return block, f"PB {nbits}bpp {nc}col"
+
+
+# ── Type 3: Tile deduplication (single-frame) ──
+
+def encode_type3_tilededup(name, frames_pixels, fw, fh, tile_w=8, tile_h=8):
+    """Type 3: Divide image into NxN tiles, deduplicate, store palette + unique tiles + index map.
+    Only for single-frame images. Format:
+      enc=3, tile_w, tile_h, cols, rows, nbits, ncolors, palette[],
+      num_unique, tile_data_total(2b), tile_offsets[num_unique](2b each),
+      tile_data, index_map[cols*rows]"""
+    if len(frames_pixels) != 1:
+        return bytearray(b'\xff' * 32768), "TD(multi-skip)"
+    if fw % tile_w != 0 or fh % tile_h != 0:
+        return bytearray(b'\xff' * 32768), "TD(bad-size)"
+
+    frame = frames_pixels[0]
+    palette = get_animation_palette(frames_pixels)
+    nc = len(palette)
+    if nc <= 2:   nbits = 1
+    elif nc <= 4: nbits = 2
+    elif nc <= 8: nbits = 3
+    else:         nbits = 4; palette = list(range(16)); nc = 16
+
+    c2i = {c: i for i, c in enumerate(palette)}
+    cols = fw // tile_w
+    rows = fh // tile_h
+
+    tile_hashes = {}
+    unique_tiles = []
+    index_map = []
+    for tr in range(rows):
+        for tc in range(cols):
+            tp = []
+            for ty in range(tile_h):
+                for tx in range(tile_w):
+                    tp.append(c2i[frame[(tr*tile_h+ty)*fw + tc*tile_w+tx]])
+            key = tuple(tp)
+            if key not in tile_hashes:
+                tile_hashes[key] = len(unique_tiles)
+                unique_tiles.append(tp)
+            index_map.append(tile_hashes[key])
+
+    num_unique = len(unique_tiles)
+    if num_unique > 255:
+        return bytearray(b'\xff' * 32768), f"TD(too-many:{num_unique})"
+
+    tile_datas = [encode_bit_rle(tp, nbits) for tp in unique_tiles]
+    tile_data_total = sum(len(td) for td in tile_datas)
+
+    block = bytearray()
+    block.append(1)       # nframes
+    block.append(3)       # enc type 3
+    block.append(tile_w)
+    block.append(tile_h)
+    block.append(cols)
+    block.append(rows)
+    block.append(nbits)
+    block.append(nc)
+    for c in palette:
+        block.append(c)
+    block.append(num_unique)
+    block.append(tile_data_total & 0xFF)
+    block.append((tile_data_total >> 8) & 0xFF)
+    offset = 0
+    for td in tile_datas:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(td)
+    for td in tile_datas:
+        block.extend(td)
+    block.extend(index_map)
+    return block, f"TD {tile_w}x{tile_h} {num_unique}tiles {nbits}bpp {nc}col"
+
+
 # ── Pick best encoding per animation ──
 
 def encode_animation(name, frames_pixels, fw, fh):
     n = len(frames_pixels)
     kd_block, kd_info = encode_type0(name, frames_pixels, fw, fh)
     pf_block, pf_info = encode_type1(name, frames_pixels, fw, fh)
-    if len(pf_block) < len(kd_block):
-        info = f"    {name:12s}: {n:2d}f, PF {len(pf_block)}b (kd={len(kd_block)}b)"
-        return pf_block, info
-    else:
-        info = f"    {name:12s}: {n:2d}f, {kd_info} {len(kd_block)}b (pf={len(pf_block)}b)"
-        return kd_block, info
+    pb_block, pb_info = encode_type2_pbits(name, frames_pixels, fw, fh)
+    td_block, td_info = encode_type3_tilededup(name, frames_pixels, fw, fh)
+    best = min([(kd_block, kd_info), (pf_block, pf_info), (pb_block, pb_info), (td_block, td_info)],
+               key=lambda x: len(x[0]))
+    best_block, best_info = best
+    info = f"    {name:12s}: {n:2d}f, {best_info} {len(best_block)}b"
+    return best_block, info
 
 
 # ── GFX output ──
