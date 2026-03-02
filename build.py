@@ -22,6 +22,7 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(DIR, "assets", "assassin")
 OUTPUT_P8 = os.path.join(DIR, "ashen_edge.p8")
 LEVEL_JSON = os.path.join(DIR, "level_data.json")
+MUSIC_P8 = os.path.join(DIR, "music.p8")  # optional music cart
 TRANS = 14  # transparency color index
 CELL_W, CELL_H = 91, 19
 
@@ -65,6 +66,11 @@ HELLBOT_ANIMS = [
     ("hb_hit",    "hit 92x36.png",    None),
     ("hb_death",  "death 92x36.png",  None),
 ]
+PORTAL_DIR = os.path.expanduser("~/Downloads/DARK Edition/Animated objects/Portal")
+PORTAL_SRC_W, PORTAL_SRC_H = 28, 41
+PORTAL_CROP_Y = 30  # top rows to skip (all transparent)
+PORTAL_W, PORTAL_H = 28, PORTAL_SRC_H - 30  # 28x11
+
 FONT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()"
 TILE_SIZE = 16
 TILESET_COLS = 18
@@ -1484,6 +1490,77 @@ def bytes_to_sfx_hex(data):
     return "\n".join(lines)
 
 
+def parse_p8_sfx_line(line):
+    """Parse one __sfx__ line (168 hex chars) back into 68 raw bytes."""
+    # Header: 8 hex chars → bytes 64-67
+    header = bytes.fromhex(line[:8])
+    # Notes: 32 notes × 5 hex chars each
+    note_data = bytearray(64)
+    for n in range(32):
+        s = line[8 + n * 5:8 + (n + 1) * 5]
+        pitch = int(s[0:2], 16)
+        wf_hex = int(s[2], 16)
+        vol = int(s[3], 16)
+        eff = int(s[4], 16)
+        wf = wf_hex & 0x7
+        custom = (wf_hex >> 3) & 0x1
+        b0 = (pitch & 0x3F) | ((wf & 0x3) << 6)
+        b1 = ((wf >> 2) & 0x1) | ((vol & 0x7) << 1) | ((eff & 0x7) << 4) | ((custom & 0x1) << 7)
+        note_data[2 * n] = b0
+        note_data[2 * n + 1] = b1
+    # Reassemble: bytes 0-63 (notes) + bytes 64-67 (header)
+    slot_bytes = bytearray(68)
+    slot_bytes[0:64] = note_data
+    slot_bytes[64:68] = header
+    return slot_bytes
+
+
+def load_music_cart(path):
+    """Load __sfx__ and __music__ sections from a .p8 cart.
+    Returns (sfx_bytes[68*64], music_bytes[256]) or (None, None) if not found."""
+    if not os.path.exists(path):
+        return None, None
+    with open(path) as f:
+        text = f.read()
+    # Parse __sfx__ section
+    sfx_buf = bytearray(68 * 64)
+    m = re.search(r'__sfx__\n(.*?)(?:\n__|\Z)', text, re.DOTALL)
+    if m:
+        for i, line in enumerate(m.group(1).strip().split('\n')):
+            line = line.strip()
+            if len(line) == 168 and i < 64:
+                sfx_buf[i * 68:(i + 1) * 68] = parse_p8_sfx_line(line)
+    # Parse __music__ section
+    music_buf = bytearray(256)
+    m = re.search(r'__music__\n(.*?)(?:\n__|\Z)', text, re.DOTALL)
+    if m:
+        for i, line in enumerate(m.group(1).strip().split('\n')):
+            line = line.strip()
+            if len(line) >= 10 and i < 64:
+                # Format: "XX AABBCCDD" where XX is flags, AA-DD are channel sfx indices
+                flag = int(line[0:2], 16)
+                ch0 = int(line[3:5], 16)
+                ch1 = int(line[5:7], 16)
+                ch2 = int(line[7:9], 16)
+                ch3 = int(line[9:11], 16)
+                music_buf[i * 4] = ch0 | ((flag & 1) << 7)
+                music_buf[i * 4 + 1] = ch1 | ((flag & 2) << 6)
+                music_buf[i * 4 + 2] = ch2 | ((flag & 4) << 5)
+                music_buf[i * 4 + 3] = ch3 | ((flag & 8) << 4)
+    return sfx_buf, music_buf
+
+
+def music_hex(music_buf):
+    """Convert 256 bytes of music data to __music__ section hex (64 lines)."""
+    lines = []
+    for i in range(64):
+        b = music_buf[i * 4:(i + 1) * 4]
+        flag = ((b[0] >> 7) & 1) | (((b[1] >> 7) & 1) << 1) | (((b[2] >> 7) & 1) << 2) | (((b[3] >> 7) & 1) << 3)
+        ch0, ch1, ch2, ch3 = b[0] & 0x7F, b[1] & 0x7F, b[2] & 0x7F, b[3] & 0x7F
+        lines.append(f"{flag:02x} {ch0:02x}{ch1:02x}{ch2:02x}{ch3:02x}")
+    return "\n".join(lines)
+
+
 def bytes_to_map_hex(data):
     """Convert bytes to __map__ section hex format (32 rows of 256 hex chars)."""
     padded = bytearray(data)
@@ -1700,6 +1777,34 @@ def build_cart():
         hb_anc_parts.append(",".join(str(c) for c in centers))
     hb_anc_str = "|".join(hb_anc_parts)
 
+    # ── Portal checkpoint ──
+    print("\nExtracting portal frames...")
+    ptl_img = Image.open(os.path.join(PORTAL_DIR, "idle 28x41.png")).convert("RGBA")
+    ptl_nf = ptl_img.width // PORTAL_SRC_W
+    ptl_frames = []
+    for f in range(ptl_nf):
+        pixels = []
+        for y in range(PORTAL_CROP_Y, PORTAL_SRC_H):
+            for x in range(PORTAL_W):
+                r, g, b, a = ptl_img.getpixel((f * PORTAL_SRC_W + x, y))
+                if a == 0:
+                    pixels.append(TRANS)
+                else:
+                    pixels.append(nearest_p8(r, g, b))
+        ptl_frames.append(pixels)
+    ptl_block, ptl_info = encode_animation("ptl_idle", ptl_frames, PORTAL_W, PORTAL_H, bpp=2)
+    total_frames += ptl_nf
+    print(ptl_info)
+    # single-anim chunk
+    portal_chunk = bytearray()
+    portal_chunk.append(1)  # 1 anim
+    portal_chunk.append(PORTAL_W)
+    portal_chunk.append(PORTAL_H)
+    portal_chunk.append(0)
+    portal_chunk.append(0)
+    portal_chunk.extend(ptl_block)
+    print(f"  portal_chunk: {len(portal_chunk)}b")
+
     # ── HP bar UI ──
     print("\nEncoding HP bar...")
     hp_img = Image.open(os.path.join(DIR, "hp_bar_preview.png")).convert('RGBA')
@@ -1749,6 +1854,9 @@ def build_cart():
     hellbot_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(hellbot_chunk)] = hellbot_chunk
     gfx_end += len(hellbot_chunk)
+    portal_base_addr = gfx_end
+    gfx_buf[gfx_end:gfx_end+len(portal_chunk)] = portal_chunk
+    gfx_end += len(portal_chunk)
     hp_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(hp_chunk)] = hp_chunk
     gfx_end += len(hp_chunk)
@@ -1765,8 +1873,36 @@ def build_cart():
     sfx_buf[sfx_data_offset:sfx_data_offset+len(sfx_data)] = sfx_data
     sfx_data_used = len(sfx_data)
 
-    print(f"  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}  hellbot_base=0x{hellbot_base_addr:04x}")
-    print(f"  hp_base=0x{hp_base_addr:04x}")
+    # Music: load from separate music cart, merge audio SFX into slots 0..sfx_first_slot-1
+    music_buf = bytearray(256)
+    music_sfx, music_pat = load_music_cart(MUSIC_P8)
+    audio_slots = 0
+    if music_sfx is not None:
+        max_audio_slot = sfx_first_slot  # slots 0..max_audio_slot-1 available
+        # Copy audio SFX from music cart (only non-empty slots within range)
+        for s in range(max_audio_slot):
+            slot_data = music_sfx[s * 68:(s + 1) * 68]
+            if any(b != 0 for b in slot_data):
+                sfx_buf[s * 68:(s + 1) * 68] = slot_data
+                audio_slots += 1
+        music_buf = music_pat
+        # Validate: warn if music references slots in the data region
+        for i in range(64):
+            for ch in range(4):
+                idx = music_buf[i * 4 + ch] & 0x3F
+                if idx >= max_audio_slot and idx < 64:
+                    flag_bits = (music_buf[i * 4 + ch] >> 7) & 1
+                    if flag_bits == 0 or True:  # check all references
+                        print(f"  WARNING: music pattern {i} ch{ch} references SFX {idx} (in data region {sfx_first_slot}-63)!")
+        print(f"\nLoaded music from {MUSIC_P8}:")
+        print(f"  {audio_slots} audio SFX slots (0-{max_audio_slot-1} available)")
+        pat_count = sum(1 for i in range(64) if any(music_buf[i*4+c] & 0x7F != 0x41 and music_buf[i*4+c] & 0x7F != 0 for c in range(4)))
+        print(f"  {pat_count} music patterns")
+    else:
+        print(f"\n  No music cart at {MUSIC_P8}, skipping music")
+
+    print(f"\n  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}  hellbot_base=0x{hellbot_base_addr:04x}")
+    print(f"  portal_base=0x{portal_base_addr:04x}  hp_base=0x{hp_base_addr:04x}")
     print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x} (in __sfx__ slots {sfx_first_slot}-63, {sfx_slots_used} slots)")
 
     print(f"\n=== TOTAL ===")
@@ -1854,6 +1990,10 @@ def build_cart():
     gen_lines.append(f"hellbot_base={hellbot_base_addr} hellbot_cw={HELLBOT_W} hellbot_ch={HELLBOT_H}")
     gen_lines.append(f'_ha=split("{hb_anc_str}","|",false)')
     gen_lines.append("hb_anc={} for i=1,#_ha do hb_anc[a_hbi+i-1]=split(_ha[i]) end")
+    # portal checkpoint
+    ptl_base_idx = hb_base_idx + len(HELLBOT_ANIMS)
+    gen_lines.append(f"a_ptl={ptl_base_idx}")
+    gen_lines.append(f"portal_base={portal_base_addr} portal_cw={PORTAL_W} portal_ch={PORTAL_H}")
     # hp bar
     gen_lines.append(f"hp_base={hp_base_addr} hp_w={hp_w} hp_h={hp_h}")
     # font lookup table: char code -> frame index (1-based)
@@ -1928,13 +2068,18 @@ def build_cart():
     sfx_hex = bytes_to_sfx_hex(sfx_buf)
     sfx_section = f"\n__sfx__\n{sfx_hex}"
 
+    # Build music section (only if we have music data)
+    music_section = ""
+    if any(b != 0 for b in music_buf):
+        music_section = f"\n__music__\n{music_hex(music_buf)}"
+
     # Write single output cart
     p8 = f"""pico-8 cartridge // http://www.pico-8.com
 version 42
 __lua__
 {lua_code}
 __gfx__
-{gfx}{map_section}{sfx_section}
+{gfx}{map_section}{sfx_section}{music_section}
 """
 
     with open(OUTPUT_P8, "w") as f:

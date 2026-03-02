@@ -85,6 +85,7 @@ body { background: #1d2b53; color: #fff; font-family: monospace; display: flex; 
       <button class="ent-type-btn" data-etype="3" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Spider</button>
       <button class="ent-type-btn" data-etype="4" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">WheelBot</button>
       <button class="ent-type-btn" data-etype="5" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">HellBot</button>
+      <button class="ent-type-btn" data-etype="6" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Portal</button>
     </div>
     <div id="entity-props" style="display:none;">
       <label style="font-size:11px">Group: <input type="number" id="entity-group" min="1" max="255" value="1"
@@ -216,7 +217,8 @@ const ENT_TYPES = [
   { id: 2, name: "Switch", w: 1, h: 1, color: "#00ff88", hasGroup: true },
   { id: 3, name: "Spider", w: 1, h: 1, color: "#ff004d", hasGroup: false },
   { id: 4, name: "WheelBot", w: 2, h: 2, color: "#29adff", hasGroup: false },
-  { id: 5, name: "HellBot", w: 2, h: 2, color: "#ff004d", hasGroup: false }
+  { id: 5, name: "HellBot", w: 2, h: 2, color: "#ff004d", hasGroup: false },
+  { id: 6, name: "Portal", w: 2, h: 1, color: "#29adff", hasGroup: false }
 ];
 let entities = [];
 let selectedEntity = null;

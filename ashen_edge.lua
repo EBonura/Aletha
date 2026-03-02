@@ -78,6 +78,8 @@ gems=0   -- collected count
 -- player HP
 plr_hp=3
 plr_inv=0
+death_t=0
+ckpt_x,ckpt_y=0,0
 
 -- spider projectiles
 sprojs={}
@@ -201,42 +203,34 @@ function decode_anim(ai)
  return frames
 end
 
+function la(b,a0,cw,ch)
+ for a=1,peek(b) do
+  local ai=read_anim(a,b)
+  acache[a0+a-1]={ai=ai,frames=decode_anim(ai),cw=cw,ch=ch}
+ end
+end
+
 function cache_anims()
- local na=peek(char_base)
- for a=1,na do
-  local ai=read_anim(a,char_base)
-  acache[a]={ai=ai,frames=decode_anim(ai),cw=cell_w,ch=cell_h}
- end
- local ai=read_anim(1,title_base)
- acache[a_title]={ai=ai,frames=decode_anim(ai),cw=128,ch=128}
- ai=read_anim(1,font_base)
- acache[a_font]={ai=ai,frames=decode_anim(ai),cw=font_cw,ch=font_ch}
- local sna=peek(spider_base)
- for a=1,sna do
-  ai=read_anim(a,spider_base)
-  local idx=a_spi+a-1
-  acache[idx]={ai=ai,frames=decode_anim(ai),cw=spider_cw,ch=spider_ch}
- end
- local wna=peek(wheelbot_base)
- for a=1,wna do
-  ai=read_anim(a,wheelbot_base)
-  local idx=a_wbi+a-1
-  acache[idx]={ai=ai,frames=decode_anim(ai),cw=wheelbot_cw,ch=wheelbot_ch}
- end
- local hna=peek(hellbot_base)
- for a=1,hna do
-  ai=read_anim(a,hellbot_base)
-  local idx=a_hbi+a-1
-  acache[idx]={ai=ai,frames=decode_anim(ai),cw=hellbot_cw,ch=hellbot_ch}
- end
- ai=read_anim(1,hp_base)
+ la(char_base,1,cell_w,cell_h)
+ la(title_base,a_title,128,128)
+ la(font_base,a_font,font_cw,font_ch)
+ la(spider_base,a_spi,spider_cw,spider_ch)
+ la(wheelbot_base,a_wbi,wheelbot_cw,wheelbot_ch)
+ la(hellbot_base,a_hbi,hellbot_cw,hellbot_ch)
+ la(portal_base,a_ptl,portal_cw,portal_ch)
+ local ai=read_anim(1,hp_base)
  hp_buf=decode_anim(ai)[1][1]
 end
 
 function hurt_plr()
- if plr_inv==0 then
+ if plr_inv==0 and state~="death" then
   plr_hp-=1
   plr_inv=60
+  if plr_hp<=0 then
+   vx=0 vy=0
+   set_anim(a_death,"death")
+   death_t=0
+  end
  end
 end
 
@@ -297,12 +291,13 @@ end
 
 -- -- animation helpers --
 
-function set_anim(a)
+function set_anim(a,s)
  if cur_anim~=a then
   cur_anim=a
   cur_frame=1
   anim_timer=0
  end
+ if s then state=s end
 end
 
 function anim_nf()
@@ -453,8 +448,7 @@ function land_on(y_top)
   grounded=true
   air_time=0
   if state=="fall" then
-   set_anim(a_land)
-   state="land"
+   set_anim(a_land,"land")
   end
  end
 end
@@ -576,6 +570,18 @@ end
 
 -- -- game --
 
+function reset_game()
+ plr_hp=3 plr_inv=0
+ px=ckpt_x py=ckpt_y
+ vx=0 vy=0
+ set_anim(a_idle,"idle")
+ grounded=true death_t=0
+ gems=0 sprojs={}
+ ents={} ent_grp={}
+ load_tiles()
+ init_ents()
+end
+
 function _init()
  palt(0,false)
  palt(trans,true)
@@ -587,45 +593,43 @@ function _init()
  -- set player to spawn
  px=spn_x*16+8
  py=spn_y*16
+ ckpt_x=px ckpt_y=py
 end
 
 function do_jump()
  vy=jump_spd
  grounded=false
- set_anim(a_jump)
- state="jump"
+ set_anim(a_jump,"jump")
  buf_jump=0
+end
+
+function sa(a)
+ atk_anchor0=anc[a][1] atk_px0=px
 end
 
 function start_combo()
  combo_idx=1
  combo_queued=false
  vx=0
- set_anim(combo_chain[1])
- atk_anchor0=anc[combo_chain[1]][1]
- atk_px0=px
- state="attack"
+ set_anim(combo_chain[1],"attack")
+ sa(combo_chain[1])
  buf_atk=0
 end
 
 function start_sweep()
  vx=0
- set_anim(a_sweep)
- atk_anchor0=anc[a_sweep][1]
- atk_px0=px
- state="sweep"
+ set_anim(a_sweep,"sweep")
+ sa(a_sweep)
  air_atk=false
  buf_sweep=0
 end
 
 function start_air_atk()
  air_atk=true
- -- force reset even if same anim
  cur_anim=a_xslice
  cur_frame=1
  anim_timer=0
- atk_anchor0=anc[a_xslice][1]
- atk_px0=px
+ sa(a_xslice)
  state="sweep"
  buf_atk=0
  buf_sweep=0
@@ -802,6 +806,10 @@ function init_ents()
    e.patrol_t=60 e.walk_count=0
   elseif e.type==4 then init_bot(e,a_wbi,4)
   elseif e.type==5 then init_bot(e,a_hbi,5)
+  elseif e.type==6 then
+   e.x=e.tx*16+8 e.y=(e.ty+1)*16
+   e.anim=a_ptl e.frame=1
+   e.anim_t=0 e.active=false
   end
  end
 end
@@ -862,19 +870,14 @@ function check_atk_ents()
     and ay1>e.y and ay0<e.y+16 then
     ent_hurt(e,a_spd,a_sph)
    end
-  elseif e.type==4 and e.hp>0
+  elseif e.type<=5 and e.type>=4 and e.hp>0
    and e.state~="death" and e.state~="sleep"
-   and e.state~="fdash" and e.inv_t==0 then
-   if ax1>e.x-14 and ax0<e.x+14
-    and ay1>e.y-24 and ay0<e.y then
-    ent_hurt(e,a_wbdt,a_wbd)
-   end
-  elseif e.type==5 and e.hp>0
-   and e.state~="death" and e.state~="sleep"
-   and e.inv_t==0 then
-   if ax1>e.x-15 and ax0<e.x+15
-    and ay1>e.y-28 and ay0<e.y then
-    ent_hurt(e,a_hbd,a_hbh)
+   and (e.type~=4 or e.state~="fdash") and e.inv_t==0 then
+   local wb=e.type==4
+   local hw=wb and 14 or 15
+   if ax1>e.x-hw and ax0<e.x+hw
+    and ay1>e.y-(wb and 24 or 28) and ay0<e.y then
+    ent_hurt(e,wb and a_wbdt or a_hbd,wb and a_wbd or a_hbh)
    end
   end
  end
@@ -883,11 +886,9 @@ end
 function ent_hurt(e,da,ha)
  e.hp-=1 e.inv_t=20
  if e.hp<=0 then
-  e.state="death" e.vx=0
-  sp_set_anim(e,da)
+  e.vx=0 sp_set_anim(e,da,"death")
  else
-  e.state="hit" e.vx=0
-  sp_set_anim(e,ha)
+  e.vx=0 sp_set_anim(e,ha,"hit")
  end
 end
 
@@ -899,14 +900,15 @@ function fire_at(sx,sy,spd)
  end
 end
 
-function sp_set_anim(e,a)
+function sp_set_anim(e,a,s)
  if e.anim~=a then
   e.anim=a e.frame=1 e.anim_t=0
  end
+ if s then e.state=s end
 end
 
 function go_idle(e,a,pt)
- e.state="idle" sp_set_anim(e,a)
+ sp_set_anim(e,a,"idle")
  e.patrol_t=pt
 end
 
@@ -1001,46 +1003,43 @@ function ent_tick(e,spd)
  return false,0
 end
 
+function af(e,nf)
+ if e.frame<nf then e.frame+=1 return end
+ return true
+end
+
 function update_spider(e)
  local spd=sp_aspd[e.anim-a_spi+1] or 6
- -- death: tick anim only, no movement
- if e.state=="death" then
+ local st=e.state
+ if st=="death" then
   local tick,nf=ent_tick(e,spd)
-  if tick and e.frame<nf then
-   e.frame+=1
-  end
+  if tick then af(e,nf) end
   return
  end
 
  if e.inv_t>0 then e.inv_t-=1 end
  if e.atk_cd>0 then e.atk_cd-=1 end
 
- -- tick animation
  local tick,nf=ent_tick(e,spd)
  if tick then
-  if e.state=="hit" then
-   if e.frame<nf then e.frame+=1
-   else
-    go_idle(e,a_spi,60)
-   end
-  elseif e.state=="attack" then
+  if st=="hit" then
+   if af(e,nf) then go_idle(e,a_spi,60) end
+  elseif st=="attack" then
    if e.frame==3 and not e.fired then
     e.fired=true
     fire_at(e.x+8,e.y+8,2)
    end
-   if e.frame<nf then e.frame+=1
-   else
+   if af(e,nf) then
     e.atk_cd=180
     e.fired=false
     go_idle(e,a_spi,60)
    end
-  elseif e.state=="walk" then
+  elseif st=="walk" then
    e.frame=e.frame%nf+1
   end
  end
 
- -- spot player
- if (e.state=="idle" or e.state=="walk") and e.atk_cd==0 then
+ if (st=="idle" or st=="walk") and e.atk_cd==0 then
   local ddx=px-e.x
   local ddy=py-e.y
   if abs(ddx)<80 and abs(ddy)<48 then
@@ -1050,13 +1049,13 @@ function update_spider(e)
    local fdy=sf_dy[s]
    local dot=ddx*fdx+ddy*fdy
    e.mdir=dot>=0 and 1 or -1
-   e.state="attack" sp_set_anim(e,a_spa)
+   sp_set_anim(e,a_spa,"attack")
    return
   end
  end
 
  -- patrol: idle <-> walk
- if e.state=="walk" then
+ if st=="walk" then
   e.move_acc+=0.5
   while e.move_acc>=1 do
    e.move_acc-=1
@@ -1064,23 +1063,26 @@ function update_spider(e)
   end
  end
  e.patrol_t-=1
- if e.state=="idle" then
+ if st=="idle" then
   if e.patrol_t<=0 then
    e.state="walk" patrol_start(e,a_spw)
   end
- elseif e.state=="walk" then
+ elseif st=="walk" then
   if e.patrol_t<=0 then
    go_idle(e,a_spi,60)
   end
  end
 end
 
-function update_wheelbot(e)
- local spd=wb_aspd[e.anim-a_wbi+1] or 6
+function update_bot(e)
+ local wb=e.type==4
+ local abi=wb and a_wbi or a_hbi
+ local asp=wb and wb_aspd or hb_aspd
+ local spd=asp[e.anim-abi+1] or 6
  local s=e.state
  if s=="death" then
   local t,nf=ent_tick(e,spd)
-  if t and e.frame<nf then e.frame+=1 end
+  if t then af(e,nf) end
   wb_move(e) return
  end
  if e.inv_t>0 then e.inv_t-=1 end
@@ -1090,61 +1092,76 @@ function update_wheelbot(e)
  local ddy=(py+11)-e.y
  local dist=abs(ddx)
  local function spot()
-  if e.atk_cd==0 and dist<80 and abs(ddy)<32 then
+  if e.atk_cd==0 and dist<(wb and 80 or 90) and abs(ddy)<32 then
    e.vx=0 e.mdir=ddx>0 and 1 or -1
-   e.state="charge" sp_set_anim(e,a_wbc)
+   if wb then
+    sp_set_anim(e,a_wbc,"charge")
+   elseif dist<32 then
+    sp_set_anim(e,a_hba,"attack")
+   elseif dist>56 then
+    sp_set_anim(e,a_hbs,"shoot")
+    e.fired=false
+   else
+    sp_set_anim(e,a_hbr,"charge")
+   end
    return true
   end
  end
  if s=="sleep" then
-  if dist<64 and abs(ddy)<48 then
-   e.state="wake" sp_set_anim(e,a_wbwk)
-  end
- elseif s=="wake" then
-  if t then
-   if e.frame<nf then e.frame+=1
+  if dist<(wb and 64 or 72) and abs(ddy)<48 then
+   if wb then
+    sp_set_anim(e,a_wbwk,"wake")
    else
-    go_idle(e,a_wbi,30)
+    sp_set_anim(e,abi,"idle")
    end
   end
+ elseif s=="wake" then
+  if t and af(e,nf) then go_idle(e,abi,30) end
  elseif s=="idle" then
   if not spot() then
    e.patrol_t-=1
    if e.patrol_t<=0 then
-    e.state="move" patrol_start(e,a_wbm)
+    e.state=wb and "move" or "run"
+    patrol_start(e,wb and a_wbm or a_hbr)
    end
   end
- elseif s=="move" then
-  e.vx=e.mdir*0.6
+ elseif s=="move" or s=="run" then
+  e.vx=e.mdir*(wb and 0.6 or 0.8)
   if t then e.frame=e.frame%nf+1 end
   if not spot() then
    e.patrol_t-=1
    if e.patrol_t<=0 then
-    e.vx=0 go_idle(e,a_wbi,60)
+    e.vx=0 go_idle(e,abi,60)
    end
   end
  elseif s=="charge" then
-  if t then
-   if e.frame<nf then e.frame+=1
-   else
+  if wb then
+   if t and af(e,nf) then
     if dist>48 then
-     e.state="shoot" sp_set_anim(e,a_wbs)
+     sp_set_anim(e,a_wbs,"shoot")
      e.fired=false
     else
-     e.state="fdash" sp_set_anim(e,a_wbfd)
+     sp_set_anim(e,a_wbfd,"fdash")
      e.inv_t=30
     end
+   end
+  else
+   e.vx=e.mdir*1.5
+   if t then e.frame=e.frame%nf+1 end
+   if dist<32 then
+    e.vx=0 sp_set_anim(e,a_hba,"attack")
    end
   end
  elseif s=="shoot" then
   if t then
    if e.frame==3 and not e.fired then
     e.fired=true
-    fire_at(e.x,e.y-12,2.5)
+    fire_at(e.x,e.y-(wb and 12 or 14),wb and 2.5 or 2)
    end
-   if e.frame<nf then e.frame+=1
-   else
-    e.atk_cd=120 go_idle(e,a_wbi,60)
+   if af(e,nf) then
+    e.fired=false
+    e.atk_cd=wb and 120 or 90
+    go_idle(e,abi,wb and 60 or 30)
    end
   end
  elseif s=="fdash" then
@@ -1152,101 +1169,24 @@ function update_wheelbot(e)
   if abs(px-e.x)<18 and abs(py+11-e.y+12)<16 then
    hurt_plr()
   end
-  if t then
-   if e.frame<nf then e.frame+=1
-   else
-    e.vx=0 e.atk_cd=120 go_idle(e,a_wbi,60)
-   end
+  if t and af(e,nf) then
+   e.vx=0 e.atk_cd=120 go_idle(e,abi,60)
   end
- elseif s=="hit" then
-  if t then
-   if e.frame<nf then e.frame+=1
-   else
-    go_idle(e,a_wbi,60)
-   end
-  end
- end
- wb_move(e)
-end
-
-function update_hellbot(e)
- local spd=hb_aspd[e.anim-a_hbi+1] or 6
- local s=e.state
- if s=="death" then
-  local t,nf=ent_tick(e,spd)
-  if t and e.frame<nf then e.frame+=1 end
-  wb_move(e) return
- end
- if e.inv_t>0 then e.inv_t-=1 end
- if e.atk_cd>0 then e.atk_cd-=1 end
- local t,nf=ent_tick(e,spd)
- local ddx=px-e.x
- local ddy=(py+11)-e.y
- local dist=abs(ddx)
- local function spot()
-  if e.atk_cd==0 and dist<90 and abs(ddy)<32 then
-   e.vx=0 e.mdir=ddx>0 and 1 or -1
-   if dist<32 then
-    e.state="attack" sp_set_anim(e,a_hba)
-   elseif dist>56 then
-    e.state="shoot" sp_set_anim(e,a_hbs)
-    e.fired=false
-   else
-    e.state="charge" sp_set_anim(e,a_hbr)
-   end
-   return true
-  end
- end
- if s=="sleep" then
-  if dist<72 and abs(ddy)<48 then
-   e.state="idle" sp_set_anim(e,a_hbi)
-  end
- elseif s=="idle" then
-  if not spot() then
-   e.patrol_t-=1
-   if e.patrol_t<=0 then
-    e.state="run" patrol_start(e,a_hbr)
-   end
-  end
- elseif s=="run" or s=="charge" then
-  e.vx=e.mdir*(s=="charge" and 1.5 or 0.8)
-  if t then e.frame=e.frame%nf+1 end
-  if s=="charge" then
-   if dist<32 then
-    e.vx=0 e.state="attack" sp_set_anim(e,a_hba)
-   end
-  elseif not spot() then
-   e.patrol_t-=1
-   if e.patrol_t<=0 then
-    e.vx=0 go_idle(e,a_hbi,60)
-   end
-  end
- elseif s=="attack" or s=="shoot" then
+ elseif s=="attack" then
   if t then
    if e.frame==3 and not e.fired then
     e.fired=true
-    if s=="attack" then
-     if dist<28 and abs(ddy)<24 then
-      hurt_plr()
-     end
-    else
-     fire_at(e.x,e.y-14,2)
+    if dist<28 and abs(ddy)<24 then
+     hurt_plr()
     end
    end
-   if e.frame<nf then e.frame+=1
-   else
-    e.fired=false
-    e.atk_cd=s=="attack" and 60 or 90
-    go_idle(e,a_hbi,30)
+   if af(e,nf) then
+    e.fired=false e.atk_cd=60
+    go_idle(e,abi,30)
    end
   end
  elseif s=="hit" then
-  if t then
-   if e.frame<nf then e.frame+=1
-   else
-    go_idle(e,a_hbi,60)
-   end
-  end
+  if t and af(e,nf) then go_idle(e,abi,60) end
  end
  wb_move(e)
 end
@@ -1283,16 +1223,10 @@ function update_ents()
    if e.cooldown>0 then e.cooldown-=1 end
    if e.state==1 then
     local tick,nf=ent_tick(e,aspd[a_sdn])
-    if tick then
-     if e.frame<nf then e.frame+=1
-     else e.state=2 e.frame=nf end
-    end
+    if tick and af(e,nf) then e.state=2 e.frame=nf end
    elseif e.state==3 then
     local tick,nf=ent_tick(e,aspd[a_sst])
-    if tick then
-     if e.frame<nf then e.frame+=1
-     else e.state=0 e.anim=a_sid e.frame=1 end
-    end
+    if tick and af(e,nf) then e.state=0 e.anim=a_sid e.frame=1 end
    end
   elseif e.type==1 then
    if e.state==1 then
@@ -1308,10 +1242,15 @@ function update_ents()
    end
   elseif e.type==3 then
    update_spider(e)
-  elseif e.type==4 then
-   update_wheelbot(e)
-  elseif e.type==5 then
-   update_hellbot(e)
+  elseif e.type==6 then
+   local t,nf=ent_tick(e,6)
+   if t then e.frame=e.frame%nf+1 end
+   if not e.active and abs(px-e.x)<12 and abs(py+8-e.y)<16 then
+    e.active=true
+    ckpt_x=e.x ckpt_y=e.y
+   end
+  elseif e.type>=4 then
+   update_bot(e)
   end
  end
 end
@@ -1375,6 +1314,12 @@ function draw_ents()
     end
     pset(sx+bpx,sy+bpy,8)
    end
+  elseif e.type==6 then
+   if e.active then
+    pal(5,2) pal(6,8) pal(7,8)
+   end
+   draw_char(e.anim,e.frame,e.x-portal_cw\2-cam_x,e.y-portal_ch-cam_y)
+   if e.active then pal(5,5) pal(6,6) pal(7,7) end
   else
    local sx=e.tx*16-cam_x
    local sy=e.ty*16-cam_y
@@ -1408,7 +1353,10 @@ function _update60()
    fade_v+=fade_d
    if fade_v>=8 then
     fade_v=8
-    if gs==0 then gs=1 end
+    if gs==0 then gs=1
+    elseif gs==1 then gs=2
+    elseif gs==2 then reset_game() gs=1
+    end
     fade_d=-1
    elseif fade_v<=0 then
     fade_v=0 fade_d=0
@@ -1416,6 +1364,12 @@ function _update60()
   end
  end
  if gs==0 then
+  if fade_d==0 and (btnp(4) or btnp(5)) then
+   fade_d=1
+  end
+  return
+ end
+ if gs==2 then
   if fade_d==0 and (btnp(4) or btnp(5)) then
    fade_d=1
   end
@@ -1434,8 +1388,22 @@ function _update60()
  if buf_atk>0 then buf_atk-=1 end
  if buf_sweep>0 then buf_sweep-=1 end
 
+ -- -- death --
+ if state=="death" then
+  tick_anim()
+  death_t+=1
+  if death_t>90 then fade_d=1 end
+  update_ents()
+  update_sprojs()
+  update_parts()
+  update_camera()
+  return
+ end
+
  -- -- state machine --
- if state=="idle" or state=="run" then
+ local s=state
+ local ba=buf_atk>0 or buf_sweep>0
+ if s=="idle" or s=="run" then
   -- walked off ledge (wait 4 frames)
   if not grounded and air_time>4 then
    set_anim(a_fall)
@@ -1452,31 +1420,28 @@ function _update60()
   elseif lr~=0 then
    vx=lr*run_spd
    facing=lr
-   if state~="run" then
-    set_anim(a_run)
-    state="run"
+   if s~="run" then
+    set_anim(a_run,"run")
    end
   else
    vx*=friction
    if abs(vx)<0.1 then vx=0 end
-   if state~="idle" then
-    set_anim(a_idle)
-    state="idle"
+   if s~="idle" then
+    set_anim(a_idle,"idle")
    end
   end
 
- elseif state=="jump" then
+ elseif s=="jump" then
   air_control(lr)
-  if buf_atk>0 or buf_sweep>0 then
+  if ba then
    start_air_atk()
   elseif vy>=0 then
-   set_anim(a_fall)
-   state="fall"
+   set_anim(a_fall,"fall")
   end
 
- elseif state=="fall" then
+ elseif s=="fall" then
   air_control(lr)
-  if buf_atk>0 or buf_sweep>0 then
+  if ba then
    start_air_atk()
   elseif grounded then
    -- check buffers before landing
@@ -1484,12 +1449,11 @@ function _update60()
     do_jump()
    else
     vx=0
-    set_anim(a_land)
-    state="land"
+    set_anim(a_land,"land")
    end
   end
 
- elseif state=="land" then
+ elseif s=="land" then
   vx=0
   if anim_done() then
    -- check buffered actions
@@ -1498,12 +1462,11 @@ function _update60()
    elseif buf_sweep>0 then
     start_sweep()
    else
-    set_anim(a_idle)
-    state="idle"
+    set_anim(a_idle,"idle")
    end
   end
 
- elseif state=="attack" then
+ elseif s=="attack" then
   apply_atk_drift()
   -- buffer combo input anytime
   if buf_atk>0
@@ -1518,21 +1481,19 @@ function _update60()
     combo_idx+=1
     combo_queued=false
     set_anim(combo_chain[combo_idx])
-    atk_anchor0=anc[combo_chain[combo_idx]][1]
-    atk_px0=px
+    sa(combo_chain[combo_idx])
    else
     combo_idx=0
-    set_anim(a_idle)
-    state="idle"
+    set_anim(a_idle,"idle")
    end
   end
 
- elseif state=="sweep" then
+ elseif s=="sweep" then
   if not air_atk then apply_atk_drift() end
   -- air atk: allow re-trigger
   if air_atk then
    air_control(lr)
-   if (buf_atk>0 or buf_sweep>0)
+   if ba
     and anim_done() then
     start_air_atk()
     return
@@ -1544,36 +1505,30 @@ function _update60()
    end
    if air_atk and not grounded then
     air_atk=false
-    set_anim(a_fall)
-    state="fall"
+    set_anim(a_fall,"fall")
    elseif air_atk and grounded then
     air_atk=false
-    set_anim(a_land)
-    state="land"
+    set_anim(a_land,"land")
    else
     -- sweep -> cross_slice chain
-    if buf_atk>0 or buf_sweep>0 then
+    if ba then
      air_atk=false
      vx=0
-     set_anim(a_xslice)
-     atk_anchor0=anc[a_xslice][1]
-     atk_px0=px
-     state="attack"
+     set_anim(a_xslice,"attack")
+     sa(a_xslice)
      buf_atk=0
      buf_sweep=0
      combo_idx=0
     else
      air_atk=false
-     set_anim(a_idle)
-     state="idle"
+     set_anim(a_idle,"idle")
     end
    end
   end
   -- air sweep: land during anim
   if air_atk and grounded then
    air_atk=false
-   set_anim(a_land)
-   state="land"
+   set_anim(a_land,"land")
   end
 
  end
@@ -1602,8 +1557,7 @@ function _update60()
   if not grounded then
    grounded=true
    if state=="fall" then
-    set_anim(a_land)
-    state="land"
+    set_anim(a_land,"land")
    end
   end
  end
@@ -1632,15 +1586,8 @@ function _update60()
 end
 
 function draw_title()
- local buf,bx,by,bw,bh=get_frame(a_title,1)
- if bw==0 then return end
- local idx=1
- for y=0,bh-1 do
-  for x=0,bw-1 do
-   pset(bx+x,by+y,ord(buf,idx))
-   idx+=1
-  end
- end
+ cls(0)
+ draw_char(a_title,1,0,0)
  -- title text (top, red, tight spacing)
  local t1="Ashen Edge"
  local tw=#t1*font_cw+(#t1-1)*-3
@@ -1656,6 +1603,15 @@ end
 function _draw()
  if gs==0 then
   draw_title()
+  apply_fade(fade_v)
+  return
+ end
+ if gs==2 then
+  cls(0)
+  p8print("you died",30,50,8,-3)
+  if fade_d==0 and (time()*2)%2<1 then
+   p8print("press x",34,70,6,-3)
+  end
   apply_fade(fade_v)
   return
  end
