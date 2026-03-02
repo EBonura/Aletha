@@ -523,11 +523,23 @@ def _pack_bits(pixels):
     return out[:i+1]
 
 
-def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None):
+def _row_delta(pixels, w, h):
+    """XOR each row with the row above (first row unchanged)."""
+    out = list(pixels)
+    for y in range(h - 1, 0, -1):
+        for x in range(w):
+            out[y * w + x] ^= pixels[(y - 1) * w + x]
+    return out
+
+
+def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None,
+                 use_rowdelta=False):
     """XOR each frame with best matching previous frame, then RLE (or bitpack
     for 1bpp). Each frame stores a 1-byte ref index: which already-decoded
     frame to XOR against. ref=255 means XOR with zeros (self-contained).
-    Uses animation-wide bbox."""
+    Uses animation-wide bbox.
+    If use_rowdelta, applies row-delta (vertical XOR) before encoding.
+    Enc byte bit 7 signals row-delta to decoder."""
     n = len(frames_pixels)
     bx, by, bw, bh = get_bbox(frames_pixels, fw, fh)
     cropped = [crop_pixels(f, fw, bx, by, bw, bh) for f in frames_pixels]
@@ -538,9 +550,10 @@ def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None):
     use_bitpack = (bpp == 1)
 
     def _encode_frame(pixels):
+        px = _row_delta(pixels, bw, bh) if use_rowdelta else pixels
         if use_bitpack:
-            return _pack_bits(pixels)
-        return ext_nibble_rle_encode(pixels, bpp)
+            return _pack_bits(px)
+        return ext_nibble_rle_encode(px, bpp)
 
     # For each frame, pick the ref that minimizes encoded size
     refs = []
@@ -559,9 +572,10 @@ def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None):
         frame_data.append(best_enc)
 
     # Build block: header + refs + frame offsets + frame data
+    enc_byte = 3 | (0x80 if use_rowdelta else 0)
     block = bytearray()
     block.append(n)
-    block.append(3)  # type 3 = Referenced XOR
+    block.append(enc_byte)
     block.append(bpp)
     if bpp < 4 and palette:
         block.extend(pack_palette(palette))
@@ -584,8 +598,9 @@ def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None):
 
     total = sum(len(d) for d in frame_data)
     ref_summary = sum(1 for r in refs if r != 255)
+    rd_tag = "+RD" if use_rowdelta else ""
     tag = "BP" if use_bitpack else "RX"
-    return block, f"{tag} {bw}x{bh} data={total}b refs={ref_summary}/{n}"
+    return block, f"{tag}{rd_tag} {bw}x{bh} data={total}b refs={ref_summary}/{n}"
 
 
 # ── Pick best encoding per animation ──
@@ -595,10 +610,17 @@ def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
         bpp = min_bpp_for_frames(frames_pixels)
         palette = build_palette(frames_pixels, bpp) if bpp < 4 else None
     n = len(frames_pixels)
-    rx_block, rx_info = encode_type3(name, frames_pixels, fw, fh, bpp, palette)
+    rx_block, rx_info = encode_type3(name, frames_pixels, fw, fh, bpp, palette,
+                                     use_rowdelta=False)
+    rd_block, rd_info = encode_type3(name, frames_pixels, fw, fh, bpp, palette,
+                                     use_rowdelta=True)
+    if len(rd_block) < len(rx_block):
+        block, info_str = rd_block, rd_info
+    else:
+        block, info_str = rx_block, rx_info
     bpp_tag = f" [{bpp}bpp]"
-    info = f"    {name:12s}: {n:2d}f, {rx_info} {len(rx_block)}b{bpp_tag}"
-    return rx_block, info
+    info = f"    {name:12s}: {n:2d}f, {info_str} {len(block)}b{bpp_tag}"
+    return block, info
 
 
 def extract_font_frames(font_path, size, chars, threshold=128):

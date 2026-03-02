@@ -134,7 +134,7 @@ function read_anim(a,cb)
  local aoff=pk2(cb+3+(a-1)*2)
  local ab=cb+3+na*2+aoff
  local nf=peek(ab)
- -- skip enc byte (ab+1), read bpp
+ local enc=peek(ab+1)
  local bpp=peek(ab+2)
  local np=bpp<4 and (1<<bpp) or 0
  local pal={}
@@ -152,7 +152,7 @@ function read_anim(a,cb)
  local fo_off=ref_off+nf
  local data_off=fo_off+nf*2
  return {
-  nf=nf,bpp=bpp,pal=pal,
+  nf=nf,bpp=bpp,pal=pal,rd=enc&0x80>0,
   bx=bx,by=by,bw=bw,bh=bh,
   ref_off=ref_off,fo_off=fo_off,
   data_off=data_off
@@ -173,6 +173,12 @@ function decode_anim(ai)
   local d=ai.bpp==1 and decode_bits(ai.data_off+foff,npix) or decode_rle(ai.data_off+foff,npix,ai.bpp)
   local base=ref==255 and zeros or frames[ref+1][1]
   for i=1,npix do d[i]=d[i]^^base[i] end
+  if ai.rd then
+   for y=1,ai.bh-1 do
+    local o=y*ai.bw
+    for x=1,ai.bw do d[o+x]=d[o+x]^^d[o+x-ai.bw] end
+   end
+  end
   frames[f]={d,ai.bx,ai.by,ai.bw,ai.bh}
  end
  if ai.bpp<4 and #ai.pal>0 then
