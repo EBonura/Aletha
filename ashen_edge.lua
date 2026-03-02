@@ -189,11 +189,16 @@ function read_anim(a,cb)
    data_off=data_off,ksz=ksz
   }
  else
-  local fo_off=h
+  local bx=peek(h)
+  local by=peek(h+1)
+  local bw=peek(h+2)
+  local bh=peek(h+3)
+  local fo_off=h+4
   local data_off=fo_off+nf*2
   return {
-   enc=1,nf=nf,
+   enc=2,nf=nf,
    bpp=bpp,pal=pal,
+   bx=bx,by=by,bw=bw,bh=bh,
    fo_off=fo_off,data_off=data_off
   }
  end
@@ -222,19 +227,15 @@ function decode_anim(ai)
    frames[f]={buf,ai.bx,ai.by,ai.bw,ai.bh}
   end
  else
+  local npix=ai.bw*ai.bh
+  local prev={}
+  for i=1,npix do prev[i]=0 end
   for f=1,ai.nf do
    local foff=pk2(ai.fo_off+(f-1)*2)
-   local addr=ai.data_off+foff
-   local bx=peek(addr)
-   local by=peek(addr+1)
-   local bw=peek(addr+2)
-   local bh=peek(addr+3)
-   if bw==0 or bh==0 then
-    frames[f]={{},0,0,0,0}
-   else
-    local buf=decode_rle(addr+4,bw*bh,ai.bpp)
-    frames[f]={buf,bx,by,bw,bh}
-   end
+   local d=decode_rle(ai.data_off+foff,npix,ai.bpp)
+   for i=1,npix do d[i]=d[i]^^prev[i] end
+   prev=d
+   frames[f]={d,ai.bx,ai.by,ai.bw,ai.bh}
   end
  end
  if ai.bpp<4 and #ai.pal>0 then
@@ -273,6 +274,15 @@ function cache_anims()
   ai=read_anim(a,spider_base)
   local idx=a_spi+a-1
   acache[idx]={ai=ai,frames=decode_anim(ai),cw=spider_cw,ch=spider_ch}
+ end
+ -- decode wheel bot anims from code string
+ p=wheelbot_base
+ for i=1,#wheelbot_data do poke(p,ord(wheelbot_data,i)) p+=1 end
+ local wna=peek(wheelbot_base)
+ for a=1,wna do
+  ai=read_anim(a,wheelbot_base)
+  local idx=a_wbi+a-1
+  acache[idx]={ai=ai,frames=decode_anim(ai),cw=wheelbot_cw,ch=wheelbot_ch}
  end
 end
 
@@ -548,28 +558,6 @@ function box_hits_solid(bx0,by0,bx1,by1)
  return false
 end
 
-function resolve_x()
- local bx0=px+cb_x0
- local by0=py+cb_y0
- local bx1=px+cb_x1
- local by1=py+cb_y1
- if not box_hits_solid(bx0,by0,bx1,by1) then
-  return
- end
- if vx>0 then
-  -- moving right: snap left edge of
-  -- colliding tile column
-  local tx1=flr((bx1-0.01)/16)
-  px=tx1*16-cb_x1
-  vx=0
- elseif vx<0 then
-  -- moving left: snap to right edge
-  -- of colliding tile column
-  local tx0=flr(bx0/16)
-  px=(tx0+1)*16-cb_x0
-  vx=0
- end
-end
 
 function check_platforms(bx0,bx1,by1)
  -- check one-way platforms at feet row
@@ -839,18 +827,18 @@ function spawn_parts(wx,wy)
  end
 end
 
-function check_atk_tiles()
- -- attack hitbox: extends in facing dir
+function atk_box()
  local ax0,ax1
  if facing>0 then
-  ax0=px+cb_x1
-  ax1=ax0+14
+  ax0=px+cb_x1 ax1=ax0+14
  else
-  ax1=px+cb_x0
-  ax0=ax1-14
+  ax1=px+cb_x0 ax0=ax1-14
  end
- local ay0=py+cb_y0
- local ay1=py+cb_y1
+ return ax0,py+cb_y0,ax1,py+cb_y1
+end
+
+function check_atk_tiles()
+ local ax0,ay0,ax1,ay1=atk_box()
  local tx0=flr(ax0/16)
  local ty0=flr(ay0/16)
  local tx1=flr((ax1-0.01)/16)
@@ -858,8 +846,6 @@ function check_atk_tiles()
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
    if band(tile_flag(tx,ty),4)>0 then
-    -- destroy tile, spawn particles
-    local c=mdat[2][ty*lvl_w+tx+1]
     mdat[2][ty*lvl_w+tx+1]=0
     spawn_parts(tx*16+8,ty*16+8)
    end
@@ -978,13 +964,7 @@ function toggle_switch(e)
 end
 
 function check_atk_ents()
- local ax0,ax1
- if facing>0 then
-  ax0=px+cb_x1 ax1=ax0+14
- else
-  ax1=px+cb_x0 ax0=ax1-14
- end
- local ay0,ay1=py+cb_y0,py+cb_y1
+ local ax0,ay0,ax1,ay1=atk_box()
  for e in all(ents) do
   if e.type==2 then
    local sx=e.tx*16
@@ -1017,44 +997,17 @@ function sp_set_anim(e,a)
  end
 end
 
--- probe: is surface still there?
--- check 1px past feet edge at two
--- points along the feet span
-function sp_probe_ground(x,y,surf)
- local s=surf+1
- local ddx,ddy=sd_dx[s],sd_dy[s]
- if surf==0 then
-  return tile_solid(flr((x+2)/16),flr((y+16)/16))
-   or tile_solid(flr((x+13)/16),flr((y+16)/16))
- elseif surf==1 then
-  return tile_solid(flr((x+16)/16),flr((y+2)/16))
-   or tile_solid(flr((x+16)/16),flr((y+13)/16))
- elseif surf==2 then
-  return tile_solid(flr((x+2)/16),flr((y-1)/16))
-   or tile_solid(flr((x+13)/16),flr((y-1)/16))
+-- probe: check two tile_solid points
+-- along an edge in direction dx,dy
+function sp_probe(x,y,dx,dy)
+ if dx~=0 then
+  local ex=dx>0 and x+16 or x-1
+  return tile_solid(flr(ex/16),flr((y+2)/16))
+   or tile_solid(flr(ex/16),flr((y+13)/16))
  else
-  return tile_solid(flr((x-1)/16),flr((y+2)/16))
-   or tile_solid(flr((x-1)/16),flr((y+13)/16))
- end
-end
-
--- probe: is wall blocking forward?
-function sp_probe_ahead(x,y,surf,mdir)
- local s=surf+1
- local fdx=sf_dx[s]*mdir
- local fdy=sf_dy[s]*mdir
- if fdx>0 then
-  return tile_solid(flr((x+16)/16),flr((y+2)/16))
-   or tile_solid(flr((x+16)/16),flr((y+13)/16))
- elseif fdx<0 then
-  return tile_solid(flr((x-1)/16),flr((y+2)/16))
-   or tile_solid(flr((x-1)/16),flr((y+13)/16))
- elseif fdy<0 then
-  return tile_solid(flr((x+2)/16),flr((y-1)/16))
-   or tile_solid(flr((x+13)/16),flr((y-1)/16))
- else
-  return tile_solid(flr((x+2)/16),flr((y+16)/16))
-   or tile_solid(flr((x+13)/16),flr((y+16)/16))
+  local ey=dy>0 and y+16 or y-1
+  return tile_solid(flr((x+2)/16),flr(ey/16))
+   or tile_solid(flr((x+13)/16),flr(ey/16))
  end
 end
 
@@ -1092,11 +1045,11 @@ function step_spider(e)
  local nx=e.x+fdx
  local ny=e.y+fdy
 
- if sp_probe_ahead(nx,ny,e.surf,e.mdir) then
+ if sp_probe(nx,ny,fdx,fdy) then
   -- inner corner: wall ahead
   e.surf=(e.surf+e.mdir)%4
   sp_snap(e)
- elseif not sp_probe_ground(nx,ny,e.surf) then
+ elseif not sp_probe(nx,ny,sd_dx[s],sd_dy[s]) then
   -- outer corner: no ground ahead
   -- shift position into the surface
   e.x+=sd_dx[s]*16
@@ -1110,21 +1063,20 @@ function step_spider(e)
  end
 end
 
-function sp_tick_anim(e)
- e.anim_t+=1
- local as=sp_aspd[e.anim-a_spi+1] or 6
- if e.anim_t>=as then
+function ent_tick(e,spd)
+ e.anim_t=(e.anim_t or 0)+1
+ if e.anim_t>=spd then
   e.anim_t=0
-  local nf=acache[e.anim].ai.nf
-  return true,nf
+  return true,acache[e.anim].ai.nf
  end
  return false,0
 end
 
 function update_spider(e)
+ local spd=sp_aspd[e.anim-a_spi+1] or 6
  -- death: tick anim only, no movement
  if e.state=="death" then
-  local tick,nf=sp_tick_anim(e)
+  local tick,nf=ent_tick(e,spd)
   if tick and e.frame<nf then
    e.frame+=1
   end
@@ -1135,7 +1087,7 @@ function update_spider(e)
  if e.atk_cd>0 then e.atk_cd-=1 end
 
  -- tick animation
- local tick,nf=sp_tick_anim(e)
+ local tick,nf=ent_tick(e,spd)
  if tick then
   if e.state=="hit" then
    if e.frame<nf then e.frame+=1
@@ -1149,7 +1101,7 @@ function update_spider(e)
     -- fire projectile from spider center
     local sx=e.x+8
     local sy=e.y+8
-    local ddx=px+0-sx
+    local ddx=px-sx
     local ddy=py+8-sy
     local dist=max(abs(ddx),abs(ddy))
     if dist>0 then
@@ -1241,65 +1193,36 @@ end
 
 function update_ents()
  for e in all(ents) do
-  -- switch cooldown
-  if e.type==2 and e.cooldown>0 then
-   e.cooldown-=1
-  end
-  -- switch animation
   if e.type==2 then
+   if e.cooldown>0 then e.cooldown-=1 end
    if e.state==1 then
-    -- activating: play sw_down (press)
-    e.anim_t=(e.anim_t or 0)+1
-    if e.anim_t>=aspd[a_sdn] then
-     e.anim_t=0
-     if e.frame<acache[a_sdn].ai.nf then
-      e.frame+=1
-     else
-      -- on: hold last frame of down
-      e.state=2 e.frame=acache[a_sdn].ai.nf
-     end
+    local tick,nf=ent_tick(e,aspd[a_sdn])
+    if tick then
+     if e.frame<nf then e.frame+=1
+     else e.state=2 e.frame=nf end
     end
    elseif e.state==3 then
-    -- deactivating: play sw_start (pop up)
-    e.anim_t=(e.anim_t or 0)+1
-    if e.anim_t>=aspd[a_sst] then
-     e.anim_t=0
-     if e.frame<acache[a_sst].ai.nf then
-      e.frame+=1
-     else
-      e.state=0 e.anim=a_sid e.frame=1
-     end
+    local tick,nf=ent_tick(e,aspd[a_sst])
+    if tick then
+     if e.frame<nf then e.frame+=1
+     else e.state=0 e.anim=a_sid e.frame=1 end
     end
    end
-  end
-  -- door animation
-  if e.type==1 then
+  elseif e.type==1 then
    if e.state==1 then
-    -- opening: play frames 1->14
-    e.anim_t=(e.anim_t or 0)+1
-    if e.anim_t>=aspd[a_door] then
-     e.anim_t=0
-     if e.frame<14 then
-      e.frame+=1
-     else
-      e.state=2 e.frame=14
-     end
+    if ent_tick(e,aspd[a_door]) then
+     if e.frame<14 then e.frame+=1
+     else e.state=2 e.frame=14 end
     end
    elseif e.state==3 then
-    -- closing: play frames 14->1
-    e.anim_t=(e.anim_t or 0)+1
-    if e.anim_t>=aspd[a_door] then
-     e.anim_t=0
-     if e.frame>1 then
-      e.frame-=1
-     else
-      e.state=0 e.frame=15
-     end
+    if ent_tick(e,aspd[a_door]) then
+     if e.frame>1 then e.frame-=1
+     else e.state=0 e.frame=15 end
     end
    end
+  elseif e.type==3 then
+   update_spider(e)
   end
-  -- spider
-  if e.type==3 then update_spider(e) end
  end
 end
 
@@ -1560,9 +1483,8 @@ function _update60()
   air_time=0
  end
 
- -- move X, then resolve X collisions
- px+=vx
- resolve_x()
+ -- move X with wall collision
+ try_move_x(vx)
 
  -- move Y, then resolve Y collisions
  py+=vy

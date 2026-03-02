@@ -43,6 +43,18 @@ SPIDER_ANIMS = [
     ("sp_hit",    "hit.png",                           None),
     ("sp_death",  "death.png",                         None),
 ]
+WHEELBOT_DIR = os.path.join(DIR, "assets", "wheelbot")
+WHEELBOT_W, WHEELBOT_H = 112, 26
+WHEELBOT_ANIMS = [
+    ("wb_idle",     "idle 112x26.png",      None),
+    ("wb_move",     "move 112x26.png",      None),
+    ("wb_charge",   "charge 112x26.png",    None),
+    ("wb_shoot",    "shoot 112x26.png",     None),
+    ("wb_firedash", "fire dash 112x26.png", None),
+    ("wb_wake",     "wake 112x26.png",      None),
+    ("wb_damaged",  "damaged 112x26.png",   None),
+    ("wb_death",    "death 112x26.png",     None),
+]
 FONT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()"
 TILE_SIZE = 16
 TILESET_COLS = 18
@@ -446,6 +458,111 @@ def encode_type1(name, frames_pixels, fw, fh, bpp=4, palette=None):
     return block, "PF"
 
 
+# ── Type 2: Sequential XOR + RLE (animation-wide bbox) ──
+
+def encode_type2(name, frames_pixels, fw, fh, bpp=4, palette=None):
+    """XOR each frame with the previous, then RLE the diff.
+    Frame 0 is plain RLE. Frames 1..n are XOR-diffs with prev frame.
+    Uses animation-wide bbox like type 0."""
+    n = len(frames_pixels)
+    bx, by, bw, bh = get_bbox(frames_pixels, fw, fh)
+    cropped = [crop_pixels(f, fw, bx, by, bw, bh) for f in frames_pixels]
+    if bpp < 4 and palette:
+        cropped = [quantize_pixels(f, palette) for f in cropped]
+
+    # Encode frame 0 as plain RLE
+    frame_rles = [ext_nibble_rle_encode(cropped[0], bpp)]
+    # Encode frames 1..n as XOR diff with previous frame
+    for i in range(1, n):
+        xor_diff = [cropped[i][j] ^ cropped[i-1][j] for j in range(len(cropped[i]))]
+        frame_rles.append(ext_nibble_rle_encode(xor_diff, bpp))
+
+    # Build block: header + frame size offsets + frame data
+    block = bytearray()
+    block.append(n)
+    block.append(2)  # type 2 = XOR+RLE
+    block.append(bpp)
+    if bpp < 4 and palette:
+        block.extend(pack_palette(palette))
+    block.append(bx)
+    block.append(by)
+    block.append(bw)
+    block.append(bh)
+    # Frame size table (2 bytes each) — cumulative offsets
+    offset = 0
+    for rle in frame_rles:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(rle)
+    # Frame data
+    for rle in frame_rles:
+        block.extend(rle)
+
+    total = sum(len(r) for r in frame_rles)
+    return block, f"XR {bw}x{bh} data={total}b"
+
+
+# ── Type 3: Referenced XOR + RLE (unified single-decoder) ──
+
+def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None):
+    """XOR each frame with best matching previous frame, then RLE.
+    Frame 0 XORs with zeros (plain RLE). Each frame stores a 1-byte
+    ref index: which already-decoded frame to XOR against.
+    ref=255 means XOR with zeros (self-contained).
+    Uses animation-wide bbox."""
+    n = len(frames_pixels)
+    bx, by, bw, bh = get_bbox(frames_pixels, fw, fh)
+    cropped = [crop_pixels(f, fw, bx, by, bw, bh) for f in frames_pixels]
+    if bpp < 4 and palette:
+        cropped = [quantize_pixels(f, palette) for f in cropped]
+
+    npix = bw * bh
+
+    # For each frame, pick the ref that minimizes XOR-RLE size
+    refs = []
+    frame_rles = []
+    for i in range(n):
+        best_ref = 255  # 255 = XOR with zeros
+        best_rle = ext_nibble_rle_encode(cropped[i], bpp)
+        # Try all previous frames as reference
+        for r in range(i):
+            xor_diff = [cropped[i][j] ^ cropped[r][j] for j in range(npix)]
+            rle = ext_nibble_rle_encode(xor_diff, bpp)
+            if len(rle) < len(best_rle):
+                best_rle = rle
+                best_ref = r
+        refs.append(best_ref)
+        frame_rles.append(best_rle)
+
+    # Build block: header + refs + frame offsets + frame data
+    block = bytearray()
+    block.append(n)
+    block.append(3)  # type 3 = Referenced XOR+RLE
+    block.append(bpp)
+    if bpp < 4 and palette:
+        block.extend(pack_palette(palette))
+    block.append(bx)
+    block.append(by)
+    block.append(bw)
+    block.append(bh)
+    # Reference table: 1 byte per frame
+    for r in range(n):
+        block.append(refs[r])
+    # Frame offset table (2 bytes each) — cumulative offsets
+    offset = 0
+    for rle in frame_rles:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(rle)
+    # Frame data
+    for rle in frame_rles:
+        block.extend(rle)
+
+    total = sum(len(r) for r in frame_rles)
+    ref_summary = sum(1 for r in refs if r != 255)
+    return block, f"RX {bw}x{bh} data={total}b refs={ref_summary}/{n}"
+
+
 # ── Pick best encoding per animation ──
 
 def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
@@ -455,13 +572,21 @@ def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
     n = len(frames_pixels)
     kd_block, kd_info = encode_type0(name, frames_pixels, fw, fh, bpp, palette)
     pf_block, pf_info = encode_type1(name, frames_pixels, fw, fh, bpp, palette)
+    xr_block, xr_info = encode_type2(name, frames_pixels, fw, fh, bpp, palette)
+    rx_block, rx_info = encode_type3(name, frames_pixels, fw, fh, bpp, palette)
     bpp_tag = f" [{bpp}bpp]"
-    if len(pf_block) < len(kd_block):
-        info = f"    {name:12s}: {n:2d}f, PF {len(pf_block)}b (kd={len(kd_block)}b){bpp_tag}"
-        return pf_block, info
-    else:
-        info = f"    {name:12s}: {n:2d}f, {kd_info} {len(kd_block)}b (pf={len(pf_block)}b){bpp_tag}"
-        return kd_block, info
+    # Pick smallest
+    options = [
+        (len(kd_block), kd_block, f"KD", kd_info),
+        (len(pf_block), pf_block, f"PF", pf_info),
+        (len(xr_block), xr_block, f"XR", xr_info),
+        (len(rx_block), rx_block, f"RX", rx_info),
+    ]
+    options.sort(key=lambda x: x[0])
+    best_size, best_block, best_tag, best_detail = options[0]
+    others = " ".join(f"{t}={s}b" for s, _, t, _ in options[1:])
+    info = f"    {name:12s}: {n:2d}f, {best_detail} {best_size}b ({others}){bpp_tag}"
+    return best_block, info
 
 
 def extract_font_frames(font_path, size, chars, threshold=128):
@@ -1257,6 +1382,45 @@ def build_cart():
         sp_anc_parts.append(",".join(str(c) for c in centers))
     sp_anc_str = "|".join(sp_anc_parts)
 
+    # ── Wheel Bot enemy ──
+    print("\nExtracting wheel bot frames...")
+    wb_anim_blocks = []
+    wb_all_frames = {}
+    for wb_name, wb_file, wb_nf in WHEELBOT_ANIMS:
+        frames = extract_frames_custom(wb_file, WHEELBOT_DIR, WHEELBOT_W, WHEELBOT_H, wb_nf)
+        wb_all_frames[wb_name] = frames
+        block, info = encode_animation(wb_name, frames, WHEELBOT_W, WHEELBOT_H)
+        wb_anim_blocks.append((wb_name, block))
+        total_frames += len(frames)
+        print(info)
+    # pack into a multi-anim chunk
+    wb_na = len(wb_anim_blocks)
+    wb_offsets = []
+    wb_data = bytearray()
+    for _, blk in wb_anim_blocks:
+        wb_offsets.append(len(wb_data))
+        wb_data.extend(blk)
+    wheelbot_chunk = bytearray()
+    wheelbot_chunk.append(wb_na)
+    wheelbot_chunk.append(WHEELBOT_W)
+    wheelbot_chunk.append(WHEELBOT_H)
+    for off in wb_offsets:
+        wheelbot_chunk.append(off & 0xFF)
+        wheelbot_chunk.append((off >> 8) & 0xFF)
+    wheelbot_chunk.extend(wb_data)
+    wheelbot_base_addr = 0x4300 + len(title_chunk) + len(font_chunk) + len(spider_chunk)
+    print(f"  wheelbot_chunk: {len(wheelbot_chunk)}b  base=0x{wheelbot_base_addr:04x}")
+    # per-frame horizontal center of non-transparent pixels (for draw anchoring)
+    wb_anc_parts = []
+    for wb_name, _, _ in WHEELBOT_ANIMS:
+        frames = wb_all_frames[wb_name]
+        centers = []
+        for f in frames:
+            xs = [idx % WHEELBOT_W for idx, c in enumerate(f) if c != TRANS]
+            centers.append((min(xs) + max(xs)) // 2 if xs else WHEELBOT_W // 2)
+        wb_anc_parts.append(",".join(str(c) for c in centers))
+    wb_anc_str = "|".join(wb_anc_parts)
+
     # Rebuild char_chunk with all animations (player + entity)
     num_anims = len(anim_blocks)
     anim_offsets = []
@@ -1337,6 +1501,22 @@ def build_cart():
     gen_lines.append(f"spider_data={bytes_to_p8_str(spider_chunk)}")
     gen_lines.append(f'_sa=split("{sp_anc_str}","|",false)')
     gen_lines.append("sp_anc={} for i=1,#_sa do sp_anc[a_spi+i-1]=split(_sa[i]) end")
+    # wheel bot — code string, multi-anim chunk at wheelbot_base
+    wb_var_map = {
+        "wb_idle": "a_wbi", "wb_move": "a_wbm",
+        "wb_charge": "a_wbc", "wb_shoot": "a_wbs",
+        "wb_firedash": "a_wbfd", "wb_wake": "a_wbwk",
+        "wb_damaged": "a_wbd", "wb_death": "a_wbdt",
+    }
+    wb_vars = [wb_var_map[name] for name, _, _ in WHEELBOT_ANIMS]
+    wb_lhs = ",".join(wb_vars)
+    wb_base_idx = sp_base_idx + len(SPIDER_ANIMS)
+    wb_rhs = ",".join(str(wb_base_idx + i) for i in range(len(WHEELBOT_ANIMS)))
+    gen_lines.append(f"{wb_lhs}={wb_rhs}")
+    gen_lines.append(f"wheelbot_base={wheelbot_base_addr} wheelbot_cw={WHEELBOT_W} wheelbot_ch={WHEELBOT_H}")
+    gen_lines.append(f"wheelbot_data={bytes_to_p8_str(wheelbot_chunk)}")
+    gen_lines.append(f'_wa=split("{wb_anc_str}","|",false)')
+    gen_lines.append("wb_anc={} for i=1,#_wa do wb_anc[a_wbi+i-1]=split(_wa[i]) end")
     # font lookup table: char code -> frame index (1-based)
     font_map_entries = ",".join(f"[{ord(c)}]={i+1}" for i, c in enumerate(FONT_CHARS))
     gen_lines.append(f"font_map={{{font_map_entries}}}")
@@ -1803,9 +1983,354 @@ __lua__
     print(f"\nWrote cart: {SPIDER_TEST_P8}")
 
 
+WHEELBOT_TEST_P8 = os.path.join(DIR, "wheelbot_test.p8")
+
+WHEELBOT_TEST_LUA = r"""
+function pk2(a) return peek(a)|(peek(a+1)<<8) end
+
+acache={}
+
+function decode_rle(off,npix,bpp)
+ bpp=bpp or 4
+ local run_bits=8-bpp
+ local run_mask=(1<<run_bits)-1
+ local color_mask=(1<<bpp)-1
+ local buf={}
+ local idx=1
+ while idx<=npix do
+  local b=peek(off)
+  off+=1
+  local color=(b>>run_bits)&color_mask
+  local r=b&run_mask
+  if r==run_mask then
+   r=run_mask+1+peek(off)
+   off+=1
+  else
+   r=r+1
+  end
+  for i=0,r-1 do buf[idx+i]=color end
+  idx+=r
+ end
+ return buf,off
+end
+
+function decode_skip(buf,off)
+ local nd=peek(off)
+ off+=1
+ if nd==255 then
+  nd=pk2(off)
+  off+=2
+ end
+ if nd==0 then return end
+ local pos=pk2(off)+1
+ off+=2
+ buf[pos]=peek(off)
+ off+=1
+ for i=2,nd do
+  local b=peek(off)
+  off+=1
+  local skip=b\16
+  local col=b&15
+  if skip==15 then
+   local ext=peek(off)
+   off+=1
+   if ext==255 then
+    skip=pk2(off)
+    off+=2
+   else
+    skip=15+ext
+   end
+  end
+  pos+=skip+1
+  buf[pos]=col
+ end
+end
+
+function read_anim(a,cb)
+ local na=peek(cb)
+ local aoff=pk2(cb+3+(a-1)*2)
+ local ab=cb+3+na*2+aoff
+ local nf=peek(ab)
+ local enc=peek(ab+1)
+ local bpp=peek(ab+2)
+ local np=bpp<4 and (1<<bpp) or 0
+ local pal={}
+ for i=0,np-1 do
+  local b=peek(ab+3+flr(i/2))
+  pal[i+1]=(i%2==0) and ((b>>4)&0xf) or (b&0xf)
+ end
+ local pal_bytes=flr((np+1)/2)
+ local h=ab+3+pal_bytes
+ if enc==0 then
+  local nk=peek(h)
+  local bx=peek(h+1)
+  local by=peek(h+2)
+  local bw=peek(h+3)
+  local bh=peek(h+4)
+  local ki_off=h+5
+  local ks_off=ki_off+nk
+  local as_off=ks_off+nk*2
+  local do_off=as_off+nf
+  local data_off=do_off+nf*2
+  local ksz={}
+  for i=0,nk-1 do
+   ksz[i]=pk2(ks_off+i*2)
+  end
+  return {
+   enc=0,nf=nf,nk=nk,
+   bpp=bpp,pal=pal,
+   bx=bx,by=by,bw=bw,bh=bh,
+   ki_off=ki_off,ks_off=ks_off,
+   as_off=as_off,do_off=do_off,
+   data_off=data_off,ksz=ksz
+  }
+ else
+  local fo_off=h
+  local data_off=fo_off+nf*2
+  return {
+   enc=1,nf=nf,
+   bpp=bpp,pal=pal,
+   fo_off=fo_off,data_off=data_off
+  }
+ end
+end
+
+function decode_anim(ai)
+ local frames={}
+ if ai.enc==0 then
+  local npix=ai.bw*ai.bh
+  local kbufs={}
+  local koff=ai.data_off
+  for i=0,ai.nk-1 do
+   kbufs[i]=decode_rle(koff,npix,ai.bpp)
+   koff+=ai.ksz[i]
+  end
+  for f=1,ai.nf do
+   local ki=peek(ai.as_off+f-1)
+   local buf={}
+   local kb=kbufs[ki]
+   for i=1,#kb do buf[i]=kb[i] end
+   local doff=pk2(ai.do_off+(f-1)*2)
+   decode_skip(buf,ai.data_off+doff)
+   frames[f]={buf,ai.bx,ai.by,ai.bw,ai.bh}
+  end
+ else
+  for f=1,ai.nf do
+   local foff=pk2(ai.fo_off+(f-1)*2)
+   local addr=ai.data_off+foff
+   local bx=peek(addr)
+   local by=peek(addr+1)
+   local bw=peek(addr+2)
+   local bh=peek(addr+3)
+   if bw==0 or bh==0 then
+    frames[f]={{},0,0,0,0}
+   else
+    local buf=decode_rle(addr+4,bw*bh,ai.bpp)
+    frames[f]={buf,bx,by,bw,bh}
+   end
+  end
+ end
+ if ai.bpp<4 and #ai.pal>0 then
+  for f=1,#frames do
+   local buf=frames[f][1]
+   for i=1,#buf do
+    buf[i]=ai.pal[buf[i]+1] or trans
+   end
+  end
+ end
+ return frames
+end
+
+function get_frame(a,f)
+ local fr=acache[a].frames[f]
+ return fr[1],fr[2],fr[3],fr[4],fr[5]
+end
+
+function draw_char(a,f,sx,sy,flip)
+ local buf,bx,by,bw,bh=get_frame(a,f)
+ if bw==0 then return end
+ local acw=acache[a].cw
+ local idx=1
+ for y=0,bh-1 do
+  for x=0,bw-1 do
+   local col=buf[idx]
+   if col~=trans then
+    local dx
+    if flip then
+     dx=acw-1-bx-x
+    else
+     dx=bx+x
+    end
+    pset(sx+dx,sy+by+y,col)
+   end
+   idx+=1
+  end
+ end
+end
+
+anim_names={"idle","move","charge","shoot","firedash","wake","damaged","death"}
+cur_anim=1
+cur_frame=1
+frame_timer=0
+frame_spd=6
+do_flip=false
+
+-- wheel bot screen position (centered)
+wbx=8
+wby=90
+floor_y=116
+
+function _init()
+ palt(0,false)
+ palt(trans,true)
+ local p=wheelbot_base
+ for i=1,#wheelbot_data do poke(p,ord(wheelbot_data,i)) p+=1 end
+ local wna=peek(wheelbot_base)
+ for a=1,wna do
+  local ai=read_anim(a,wheelbot_base)
+  acache[a]={ai=ai,frames=decode_anim(ai),cw=wheelbot_cw,ch=wheelbot_ch}
+ end
+end
+
+function _update()
+ if btnp(0) then
+  cur_anim-=1
+  if cur_anim<1 then cur_anim=#anim_names end
+  cur_frame=1
+  frame_timer=0
+ end
+ if btnp(1) then
+  cur_anim+=1
+  if cur_anim>#anim_names then cur_anim=1 end
+  cur_frame=1
+  frame_timer=0
+ end
+ if btnp(4) then
+  do_flip=not do_flip
+ end
+ frame_timer+=1
+ if frame_timer>=frame_spd then
+  frame_timer=0
+  local nf=acache[cur_anim].ai.nf
+  cur_frame=cur_frame%nf+1
+ end
+end
+
+function _draw()
+ cls(5)
+ -- floor
+ rectfill(0,floor_y,127,127,1)
+ line(0,floor_y-1,127,floor_y-1,13)
+
+ -- wheel bot (anchor-based positioning)
+ local ax=(wb_anc[cur_anim] and wb_anc[cur_anim][cur_frame]) or wheelbot_cw\2
+ local dx
+ if do_flip then
+  dx=wbx-(wheelbot_cw-1-ax)
+ else
+  dx=wbx-ax
+ end
+ draw_char(cur_anim,cur_frame,dx,wby,do_flip)
+
+ -- center line (where wbx is — should stay consistent when flipping)
+ line(wbx,wby-2,wbx,wby+wheelbot_ch+2,11)
+
+ -- bbox outline
+ local buf,bx,by,bw,bh=get_frame(cur_anim,cur_frame)
+ if bw>0 then
+  local bxd=bx
+  if do_flip then bxd=wheelbot_cw-bx-bw end
+  rect(dx+bxd-1,wby+by-1,dx+bxd+bw,wby+by+bh,8)
+ end
+
+ local nf=acache[cur_anim].ai.nf
+ print(anim_names[cur_anim].." "..cur_frame.."/"..nf,2,2,7)
+ print("cell:"..wheelbot_cw.."x"..wheelbot_ch,2,10,6)
+ if bw>0 then
+  print("bbox:"..bx..","..by.." "..bw.."x"..bh,2,18,6)
+ end
+ print("anc:"..ax.." flip:"..(do_flip and "y" or "n"),2,26,6)
+ print("\x8d\x8e anim  z:flip",2,120,6)
+end
+"""
+
+
+def build_wheelbot_test():
+    print("=== Building wheelbot_test.p8 ===")
+
+    print("\nExtracting wheel bot frames...")
+    wb_anim_blocks = []
+    wb_all_frames = {}
+    for wb_name, wb_file, wb_nf in WHEELBOT_ANIMS:
+        frames = extract_frames_custom(wb_file, WHEELBOT_DIR, WHEELBOT_W, WHEELBOT_H, wb_nf)
+        wb_all_frames[wb_name] = frames
+        block, info = encode_animation(wb_name, frames, WHEELBOT_W, WHEELBOT_H)
+        wb_anim_blocks.append((wb_name, block))
+        print(info)
+
+    # Pack into multi-anim chunk (base = 0x4300, standalone test cart)
+    wb_na = len(wb_anim_blocks)
+    wb_offsets = []
+    wb_data = bytearray()
+    for _, blk in wb_anim_blocks:
+        wb_offsets.append(len(wb_data))
+        wb_data.extend(blk)
+    wheelbot_chunk = bytearray()
+    wheelbot_chunk.append(wb_na)
+    wheelbot_chunk.append(WHEELBOT_W)
+    wheelbot_chunk.append(WHEELBOT_H)
+    for off in wb_offsets:
+        wheelbot_chunk.append(off & 0xFF)
+        wheelbot_chunk.append((off >> 8) & 0xFF)
+    wheelbot_chunk.extend(wb_data)
+    wheelbot_base_addr = 0x4300
+    print(f"  wheelbot_chunk: {len(wheelbot_chunk)}b  base=0x{wheelbot_base_addr:04x}")
+
+    # Per-frame horizontal anchor (center of visible pixels)
+    wb_anc_parts = []
+    for wb_name, _, _ in WHEELBOT_ANIMS:
+        frames = wb_all_frames[wb_name]
+        centers = []
+        for f in frames:
+            xs = [idx % WHEELBOT_W for idx, c in enumerate(f) if c != TRANS]
+            centers.append((min(xs) + max(xs)) // 2 if xs else WHEELBOT_W // 2)
+        wb_anc_parts.append(",".join(str(c) for c in centers))
+    wb_anc_str = "|".join(wb_anc_parts)
+
+    # Build generated block
+    gen_lines = []
+    gen_lines.append(f"trans={TRANS}")
+    wb_var_map = {
+        "wb_idle": "a_wbi", "wb_move": "a_wbm",
+        "wb_charge": "a_wbc", "wb_shoot": "a_wbs",
+        "wb_firedash": "a_wbfd", "wb_wake": "a_wbwk",
+        "wb_damaged": "a_wbd", "wb_death": "a_wbdt",
+    }
+    wb_vars = [wb_var_map[name] for name, _, _ in WHEELBOT_ANIMS]
+    gen_lines.append(",".join(wb_vars) + "=" + ",".join(str(i+1) for i in range(len(WHEELBOT_ANIMS))))
+    gen_lines.append(f"wheelbot_base={wheelbot_base_addr} wheelbot_cw={WHEELBOT_W} wheelbot_ch={WHEELBOT_H}")
+    gen_lines.append(f"wheelbot_data={bytes_to_p8_str(wheelbot_chunk)}")
+    gen_lines.append(f'_wa=split("{wb_anc_str}","|",false)')
+    gen_lines.append("wb_anc={} for i=1,#_wa do wb_anc[i]=split(_wa[i]) end")
+    generated_block = "\n".join(gen_lines)
+
+    lua_code = f"--##generated##\n{generated_block}\n--##end##\n{WHEELBOT_TEST_LUA}"
+
+    p8 = f"""pico-8 cartridge // http://www.pico-8.com
+version 42
+__lua__
+{lua_code}
+"""
+    with open(WHEELBOT_TEST_P8, "w") as f:
+        f.write(p8)
+    print(f"\nWrote cart: {WHEELBOT_TEST_P8}")
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "spider_test":
         build_spider_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == "wheelbot_test":
+        build_wheelbot_test()
     else:
         build_cart()
