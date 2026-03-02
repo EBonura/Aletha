@@ -75,6 +75,7 @@ gems=0   -- collected count
 
 -- player HP
 plr_hp=3
+plr_inv=0
 
 -- spider projectiles
 sprojs={}
@@ -216,6 +217,36 @@ function cache_anims()
   local idx=a_wbi+a-1
   acache[idx]={ai=ai,frames=decode_anim(ai),cw=wheelbot_cw,ch=wheelbot_ch}
  end
+ -- hp bar
+ ai=read_anim(1,hp_base)
+ hp_buf=decode_anim(ai)[1][1]
+end
+
+function hurt_plr()
+ if plr_inv==0 then
+  plr_hp-=1
+  plr_inv=60
+ end
+end
+
+function draw_hp()
+ local fill=hp_w*(1-plr_hp/3)
+ local tt=time()*3
+ local idx=1
+ for y=0,hp_h-1 do
+  local wave=sin(y*0.12+tt)*1.5
+  for x=0,hp_w-1 do
+   local c=hp_buf[idx]
+   if c==0 then
+    pset(2+x,2+y,0)
+   elseif c==7 then
+    if hp_w-1-x>=fill+wave then
+     pset(2+x,2+y,8)
+    end
+   end
+   idx+=1
+  end
+ end
 end
 
 function get_frame(a,f)
@@ -301,204 +332,105 @@ function load_tiles()
   end
   return
  end
- -- header: 12+nl bytes at map_base
- local b=map_base
- local nt=peek(b)
- local nl=peek(b+1)
- local mw=pk2(b+2)
- local mh=pk2(b+4)
- local sx=pk2(b+6)
- local sy=pk2(b+8)
- local tbsz=pk2(b+10)
- -- per-layer encoding modes
- local lmode={}
- for i=1,nl do lmode[i]=peek(b+11+i) end
-
- -- tile blob starts after header+mode bytes
- local tblob=b+12+nl
- local p=tblob+tbsz
-
- -- decode ALL data from __map__ into
- -- lua tables before writing to memory
-
- -- 1. decode all tile pixels via EG-2
- local tbpp=peek(tblob)
+ local nt,nl=peek(map_base),peek(map_base+1)
+ local p=map_base+12+nl
+ local tbpp=peek(p)
  local tnp=1<<tbpp
  local tpal={}
  for i=0,tnp-1 do
-  local tb=peek(tblob+1+i\2)
-  if i%2==0 then tpal[i]=(tb>>4)&0xf else tpal[i]=tb&0xf end
+  local tb=peek(p+1+i\2)
+  tpal[i]=i%2==0 and (tb>>4)&0xf or tb&0xf
  end
- local tpal_bytes=flr((tnp+1)/2)
- local all_idx=decode_eg2(tblob+1+tpal_bytes,nt*256,tbpp,16)
-
- -- 2. decode each layer's map data
+ local all_idx=decode_eg2(p+1+tnp\2,nt*256,tbpp,16)
+ p+=pk2(map_base+10)
  for L=1,nl do
   mdat[L]={}
   for i=1,sz do mdat[L][i]=0 end
-
-  if lmode[L]==0 then
-   -- mode 0: standard RLE
-   local mx,my=0,0
-   while my<mh do
-    local cell=peek(p)
-    local run=peek(p+1)
-    p+=2
-    for i=1,run do
-     if my<mh then
-      mdat[L][my*mw+mx+1]=cell
-      mx+=1
-      if mx>=mw then mx=0 my+=1 end
-     end
-    end
-   end
-
-  elseif lmode[L]==1 then
-   -- mode 1: tiled fill
-   local tw=peek(p)
-   local th=peek(p+1)
-   local dx=peek(p+2)
-   local dy=peek(p+3)
-   local rw=peek(p+4)
-   local rh=peek(p+5)
-   local td=p+6
+  local m=peek(map_base+11+L)
+  if m==1 then
+   local tw,th=peek(p),peek(p+1)
+   local dx,dy=peek(p+2),peek(p+3)
+   local rw,rh=peek(p+4),peek(p+5)
    for ry=0,rh-1 do
     for rx=0,rw-1 do
-     local tc=peek(td+(ry%th)*tw+(rx%tw))
-     mdat[L][(dy+ry)*mw+dx+rx+1]=tc
+     mdat[L][(dy+ry)*lvl_w+dx+rx+1]=peek(p+6+(ry%th)*tw+(rx%tw))
     end
    end
    p+=6+tw*th
-
-  elseif lmode[L]==2 then
-   -- mode 2: packbits
+  elseif m==2 then
    local idx=1
    while idx<=sz do
-    local ctrl=peek(p)
-    p+=1
+    local ctrl=peek(p) p+=1
     if ctrl<128 then
      for i=1,ctrl+1 do
-      mdat[L][idx]=peek(p)
-      p+=1
-      idx+=1
+      mdat[L][idx]=peek(p) p+=1 idx+=1
      end
     else
-     local rep=ctrl-125
-     local val=peek(p)
-     p+=1
-     for i=1,rep do
-      mdat[L][idx]=val
-      idx+=1
+     local val=peek(p) p+=1
+     for i=1,ctrl-125 do
+      mdat[L][idx]=val idx+=1
      end
     end
    end
   end
  end
-
- -- 3. decode entities
- local ne=peek(p)
- p+=1
+ local ne=peek(p) p+=1
  for i=1,ne do
-  local e={type=peek(p),tx=peek(p+1),
-   ty=peek(p+2),group=peek(p+3),
-   state=0,anim_t=0}
-  add(ents,e)
-  p+=4
-  if not ent_grp[e.group] then
-   ent_grp[e.group]={}
-  end
-  add(ent_grp[e.group],#ents)
+  local a,b,c,d=peek(p,4)
+  local e={type=a,tx=b,ty=c,group=d}
+  add(ents,e) p+=4
+  ent_grp[d]=ent_grp[d] or {}
+  add(ent_grp[d],#ents)
  end
-
- -- 4. write main tiles (1..nst) to spritesheet
- local nst=lvl_nst
- for t=0,nst-1 do
-  local base=t*256
-  local tcol=t%8
-  local trow=t\8
+ for t=0,nt-1 do
+  local bg=t>=lvl_nst
   for py=0,15 do
-   local dst=(trow*16+py)*64+tcol*8
-   for px=0,7 do
-    local i=base+py*16+px*2
-    local lo=tpal[all_idx[i+1]]&0xf
-    local hi=tpal[all_idx[i+2]]&0xf
-    poke(dst+px,lo|(hi<<4))
+   local dst
+   if bg then
+    dst=0x8000+(t-lvl_nst)*128+py*8
+   else
+    dst=(t\8*16+py)*64+t%8*8
    end
-  end
- end
- -- 5. write bg tiles to user memory
- local bg_base=0x8000
- local bg_clr=1
- for t=nst,nt-1 do
-  local base=t*256
-  local addr=bg_base+(t-nst)*128
-  for py=0,15 do
    for px=0,7 do
-    local i=base+py*16+px*2
+    local i=t*256+py*16+px*2
     local lo=tpal[all_idx[i+1]]&0xf
     local hi=tpal[all_idx[i+2]]&0xf
-    if lo==trans then lo=bg_clr end
-    if hi==trans then hi=bg_clr end
-    poke(addr+py*8+px,lo|(hi<<4))
+    if bg then
+     if lo==trans then lo=1 end
+     if hi==trans then hi=1 end
+    end
+    poke(dst+px,lo|(hi<<4))
    end
   end
  end
  all_idx=nil
 end
 
-function tile_at(tx,ty)
- if tx<0 or tx>=lvl_w or ty<0 or ty>=lvl_h then return 0 end
- return mdat[2][ty*lvl_w+tx+1]\4
-end
+function thi(v) return flr((v-0.01)/16) end
 
 function tile_flag(tx,ty)
- local t=tile_at(tx,ty)
+ if tx<0 or tx>=lvl_w or ty<0 or ty>=lvl_h then return 0 end
+ local t=mdat[2][ty*lvl_w+tx+1]\4
  if t==0 then return 0 end
  return tflg[t] or 0
 end
 
 function tile_solid(tx,ty)
- -- flag bit 0 = solid
  if tile_flag(tx,ty)&1>0 then
   return true
  end
  return ent_solid(tx,ty)
 end
 
-function tile_platform(tx,ty)
- -- flag bit 1 = one-way platform
- return tile_flag(tx,ty)&2>0
-end
-
--- check if collision box overlaps
--- any solid tile
 function box_hits_solid(bx0,by0,bx1,by1)
  local tx0=flr(bx0/16)
  local ty0=flr(by0/16)
- local tx1=flr((bx1-0.01)/16)
- local ty1=flr((by1-0.01)/16)
+ local tx1=thi(bx1)
+ local ty1=thi(by1)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
    if tile_solid(tx,ty) then
     return true
-   end
-  end
- end
- return false
-end
-
-
-function check_platforms(bx0,bx1,by1)
- -- check one-way platforms at feet row
- -- only land if feet were above last frame
- local tx0=flr(bx0/16)
- local tx1=flr((bx1-0.01)/16)
- local ty=flr((by1-0.01)/16)
- for tx=tx0,tx1 do
-  if tile_platform(tx,ty) then
-   local ptop=ty*16
-   if prev_by1<=ptop then
-    return true,ptop
    end
   end
  end
@@ -523,25 +455,27 @@ function resolve_y()
  local by0=py+cb_y0
  local bx1=px+cb_x1
  local by1=py+cb_y1
- local solid=box_hits_solid(bx0,by0,bx1,by1)
- if solid then
+ if box_hits_solid(bx0,by0,bx1,by1) then
   if vy>=0 then
-   local ty1=flr((by1-0.01)/16)
-   land_on(ty1*16)
+   land_on(thi(by1)*16)
   elseif vy<0 then
-   local ty0=flr(by0/16)
-   py=(ty0+1)*16-cb_y0
+   py=(flr(by0/16)+1)*16-cb_y0
    vy=0
   end
   return
  end
- -- no solid: check one-way platforms
  if vy>=0 then
-  local hit,ptop=check_platforms(
-   bx0,bx1,by1)
-  if hit then
-   land_on(ptop)
-   return
+  local tx0=flr(bx0/16)
+  local tx1=thi(bx1)
+  local ty=thi(by1)
+  local ptop=ty*16
+  if prev_by1<=ptop then
+   for tx=tx0,tx1 do
+    if tile_flag(tx,ty)&2>0 then
+     land_on(ptop)
+     return
+    end
+   end
   end
  end
  grounded=false
@@ -705,8 +639,7 @@ function try_move_x(dx)
   local by1=py+cb_y1
   if box_hits_solid(bx0,by0,bx1,by1) then
    if dir>0 then
-    local tx1=flr((bx1-0.01)/16)
-    px=tx1*16-cb_x1
+    px=thi(bx1)*16-cb_x1
    else
     local tx0=flr(bx0/16)
     px=(tx0+1)*16-cb_x0
@@ -770,8 +703,8 @@ function check_atk_tiles()
  local ax0,ay0,ax1,ay1=atk_box()
  local tx0=flr(ax0/16)
  local ty0=flr(ay0/16)
- local tx1=flr((ax1-0.01)/16)
- local ty1=flr((ay1-0.01)/16)
+ local tx1=thi(ax1)
+ local ty1=thi(ay1)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
    if tile_flag(tx,ty)&4>0 then
@@ -942,6 +875,14 @@ function check_atk_ents()
  end
 end
 
+function fire_at(sx,sy,spd)
+ local dx,dy=px-sx,py+11-sy
+ local d=max(abs(dx),abs(dy))
+ if d>0 then
+  add(sprojs,{x=sx,y=sy,dx=dx/d*spd,dy=dy/d*spd,exp=false,et=0})
+ end
+end
+
 function sp_set_anim(e,a)
  if e.anim~=a then
   e.anim=a e.frame=1 e.anim_t=0
@@ -1033,7 +974,7 @@ function wb_move(e)
  e.y+=e.vy
  if box_hits_solid(e.x-14,e.y-24,e.x+14,e.y) then
   if e.vy>=0 then
-   e.y=flr((e.y-0.01)/16)*16
+   e.y=thi(e.y)*16
    e.vy=0 e.grounded=true
   else
    e.y=flr((e.y-24)/16)*16+16+24
@@ -1076,18 +1017,7 @@ function update_spider(e)
   elseif e.state=="attack" then
    if e.frame==3 and not e.fired then
     e.fired=true
-    -- fire projectile from spider center
-    local sx=e.x+8
-    local sy=e.y+8
-    local ddx=px-sx
-    local ddy=py+8-sy
-    local dist=max(abs(ddx),abs(ddy))
-    if dist>0 then
-     local spd=2
-     local vx=ddx/dist*spd
-     local vy=ddy/dist*spd
-     add(sprojs,{x=sx,y=sy,dx=vx,dy=vy,exp=false,et=0})
-    end
+    fire_at(e.x+8,e.y+8,2)
    end
    if e.frame<nf then e.frame+=1
    else
@@ -1207,13 +1137,7 @@ function update_wheelbot(e)
   if t then
    if e.frame==3 and not e.fired then
     e.fired=true
-    local sx,sy=e.x,e.y-12
-    local d=max(abs(ddx),abs(ddy))
-    if d>0 then
-     add(sprojs,{x=sx,y=sy,
-      dx=ddx/d*2.5,dy=ddy/d*2.5,
-      exp=false,et=0})
-    end
+    fire_at(e.x,e.y-12,2.5)
    end
    if e.frame<nf then e.frame+=1
    else
@@ -1223,7 +1147,7 @@ function update_wheelbot(e)
  elseif e.state=="fdash" then
   e.vx=e.mdir*3
   if abs(px-e.x)<18 and abs(py+11-e.y+12)<16 then
-   plr_hp-=1
+   hurt_plr()
   end
   if t then
    if e.frame<nf then e.frame+=1
@@ -1258,7 +1182,7 @@ function update_sprojs()
    elseif p.x>px+cb_x0 and p.x<px+cb_x1
     and p.y>py+cb_y0 and p.y<py+cb_y1 then
     p.exp=true p.et=0
-    plr_hp-=1
+    hurt_plr()
    -- off screen
    elseif p.x<cam_x-8 or p.x>cam_x+136
     or p.y<cam_y-8 or p.y>cam_y+136 then
@@ -1404,6 +1328,7 @@ function _update60()
   end
   return
  end
+ if plr_inv>0 then plr_inv-=1 end
  local lr=0
  if btn(0) then lr=-1 end
  if btn(1) then lr=1 end
@@ -1664,7 +1589,9 @@ function _draw()
  else
   dx=vx-ax
  end
- draw_char(cur_anim,cur_frame,dx-cam_x,py-cam_y,flip)
+ if plr_inv==0 or plr_inv%4<2 then
+  draw_char(cur_anim,cur_frame,dx-cam_x,py-cam_y,flip)
+ end
 
  -- draw particles
  for p in all(parts) do
@@ -1672,7 +1599,8 @@ function _draw()
   circfill(p.x-cam_x-1,p.y-cam_y-1,1,14)
  end
 
- -- hud: gem counter
- print(gems,2,2,8)
+ -- hud
+ draw_hp()
+ print(gems,2,hp_h+4,8)
  apply_fade(fade_v)
 end

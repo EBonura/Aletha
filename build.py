@@ -1587,6 +1587,25 @@ def build_cart():
         wb_anc_parts.append(",".join(str(c) for c in centers))
     wb_anc_str = "|".join(wb_anc_parts)
 
+    # ── HP bar UI ──
+    print("\nEncoding HP bar...")
+    hp_img = Image.open(os.path.join(DIR, "hp_bar_preview.png")).convert('RGBA')
+    hp_w, hp_h = hp_img.size
+    hp_pixels = []
+    for y in range(hp_h):
+        for x in range(hp_w):
+            r, g, b, a = hp_img.getpixel((x, y))
+            if a < 128:
+                hp_pixels.append(TRANS)
+            elif r > 200 and g > 200 and b > 200:
+                hp_pixels.append(7)   # white = fill area
+            else:
+                hp_pixels.append(0)   # black = outline
+    hp_block, hp_info = encode_animation("hp_bar", [hp_pixels], hp_w, hp_h)
+    print(hp_info)
+    hp_chunk = bytearray([1, 0, 0, 0, 0]) + hp_block
+    print(f"  hp_chunk: {len(hp_chunk)}b")
+
     # Rebuild char_chunk with all animations (player + entity)
     num_anims = len(anim_blocks)
     anim_offsets = []
@@ -1620,9 +1639,13 @@ def build_cart():
     wheelbot_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(wheelbot_chunk)] = wheelbot_chunk
     gfx_end += len(wheelbot_chunk)
+    hp_base_addr = gfx_end
+    gfx_buf[gfx_end:gfx_end+len(hp_chunk)] = hp_chunk
+    gfx_end += len(hp_chunk)
     total = gfx_end
     print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x}")
     print(f"  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}")
+    print(f"  hp_base=0x{hp_base_addr:04x}")
 
     print(f"\n=== TOTAL ===")
     print(f"  {num_anims} anims ({len(ANIMS)} player + {len(ent_anim_info)} entity), {total_frames} frames")
@@ -1694,6 +1717,8 @@ def build_cart():
     gen_lines.append(f"wheelbot_base={wheelbot_base_addr} wheelbot_cw={WHEELBOT_W} wheelbot_ch={WHEELBOT_H}")
     gen_lines.append(f'_wa=split("{wb_anc_str}","|",false)')
     gen_lines.append("wb_anc={} for i=1,#_wa do wb_anc[a_wbi+i-1]=split(_wa[i]) end")
+    # hp bar
+    gen_lines.append(f"hp_base={hp_base_addr} hp_w={hp_w} hp_h={hp_h}")
     # font lookup table: char code -> frame index (1-based)
     # font_map: build from character string (saves ~270 tokens vs explicit table)
     # Escape ' inside the Lua string since we use single quotes
