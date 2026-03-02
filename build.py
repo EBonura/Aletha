@@ -1685,13 +1685,10 @@ def build_cart():
         char_chunk.append((off >> 8) & 0xFF)
     char_chunk.extend(anim_data)
 
-    # GFX: char_chunk + font + spider + wheelbot (title moved to __sfx__)
+    # GFX: char_chunk + spider + wheelbot + hp (title+font moved to __sfx__)
     gfx_buf = bytearray(8192)
     gfx_buf[:len(char_chunk)] = char_chunk
     gfx_end = len(char_chunk)
-    font_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(font_chunk)] = font_chunk
-    gfx_end += len(font_chunk)
     spider_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(spider_chunk)] = spider_chunk
     gfx_end += len(spider_chunk)
@@ -1703,20 +1700,20 @@ def build_cart():
     gfx_end += len(hp_chunk)
     gfx_total = gfx_end
 
-    # SFX: data packed from slot 63 downward, lower slots free for audio
+    # SFX: title + font packed from slot 63 downward, lower slots free for audio
     sfx_buf = bytearray(68 * 64)  # 64 slots × 68 bytes
-    sfx_slots_used = (len(title_chunk) + 67) // 68
-    sfx_first_slot = 64 - sfx_slots_used  # e.g. 64-22 = slot 42
+    sfx_data = title_chunk + font_chunk  # pack title first, then font
+    sfx_slots_used = (len(sfx_data) + 67) // 68
+    sfx_first_slot = 64 - sfx_slots_used
     sfx_data_offset = sfx_first_slot * 68
     title_base_addr = 0x3200 + sfx_data_offset
-    sfx_buf[sfx_data_offset:sfx_data_offset+len(title_chunk)] = title_chunk
-    sfx_data_used = len(title_chunk)
+    font_base_addr = title_base_addr + len(title_chunk)
+    sfx_buf[sfx_data_offset:sfx_data_offset+len(sfx_data)] = sfx_data
+    sfx_data_used = len(sfx_data)
 
-    print(f"  font_base=0x{font_base_addr:04x}")
     print(f"  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}")
     print(f"  hp_base=0x{hp_base_addr:04x}")
-    sfx_capacity = sfx_slots_used * 68
-    print(f"  title_base=0x{title_base_addr:04x} (in __sfx__ slots {sfx_first_slot}-63, {sfx_slots_used} slots)")
+    print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x} (in __sfx__ slots {sfx_first_slot}-63, {sfx_slots_used} slots)")
 
     print(f"\n=== TOTAL ===")
     print(f"  {num_anims} anims ({len(ANIMS)} player + {len(ent_anim_info)} entity), {total_frames} frames")
@@ -1756,7 +1753,7 @@ def build_cart():
     ent_lhs = ",".join(ent_vars)
     ent_rhs = ",".join(str(len(ANIMS) + i + 1) for i in range(len(ent_anim_info)))
     gen_lines.append(f'{ent_lhs}=unpack(split"{ent_rhs}")')
-    # title in __sfx__ memory, font in __gfx__
+    # title + font in __sfx__ memory
     num_main = len(ANIMS) + len(ent_anim_info)
     gen_lines.append(f"a_title={num_main+1} a_font={num_main+2}")
     gen_lines.append(f"title_base={title_base_addr} font_base={font_base_addr}")
