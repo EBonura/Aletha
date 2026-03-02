@@ -104,14 +104,16 @@ function decode_eg2(off,npix,bpp,w)
   if bi>7 then by=peek(off) off+=1 bi=0 end
   return v
  end
+ local mode=rb()+rb()*2+rb()*4
+ local k=rb()+rb()*2+1
+ local ks=1<<k
  local function eg()
   local z=0
   while rb()==0 do z+=1 end
   local v=1
-  for i=1,z+2 do v=v*2+rb() end
-  return v-4
+  for i=1,z+k do v=v*2+rb() end
+  return v-ks
  end
- local mode=rb()*2+rb()
  local buf={}
  local pb,pv,pi=0,0,1
  while pi<=npix do
@@ -134,6 +136,15 @@ function decode_eg2(off,npix,bpp,w)
  elseif mode==3 then
   for i=w+2,npix do
    if (i-1)%w>0 then buf[i]=buf[i]^^buf[i-w-1] end
+  end
+ elseif mode==4 then
+  for i=2,npix do
+   local x=(i-1)%w
+   local a,b,c=x>0 and buf[i-1] or 0,i>w and buf[i-w] or 0,x>0 and i>w and buf[i-w-1] or 0
+   local p,r=a+b-c
+   local pa,pc=abs(p-a),abs(p-c)
+   r=pa<=abs(p-b) and pa<=pc and a or abs(p-b)<=pc and b or c
+   buf[i]=buf[i]^^r
   end
  end
  return buf

@@ -623,59 +623,87 @@ def _apply_diff_mode(pixels, w, h, mode):
     return out
 
 
-def _eg2_encode_bits(val):
-    """Exp-Golomb order 2: encode non-negative integer as bit list."""
-    val2 = val + 4  # val + (1 << k) where k=2
+def _eg_encode_bits(val, order=2):
+    """Exp-Golomb of given order: encode non-negative integer as bit list."""
+    val2 = val + (1 << order)
     n = val2.bit_length()
-    prefix_len = n - 1 - 2  # n - 1 - k
-    bits = []
-    for _ in range(prefix_len):
-        bits.append(0)
+    prefix_len = n - 1 - order
+    bits = [0] * prefix_len
     for b in range(n - 1, -1, -1):
         bits.append((val2 >> b) & 1)
     return bits
 
+# Keep old name as alias for backward compat
+_eg2_encode_bits = lambda val: _eg_encode_bits(val, 2)
+
+
+def _apply_paeth(pixels, w, h):
+    """Apply Paeth prediction: XOR each pixel with paeth(left, up, up-left)."""
+    out = list(pixels)
+    for i in range(len(pixels) - 1, -1, -1):
+        x, y = i % w, i // w
+        a = pixels[i - 1] if x > 0 else 0
+        b = pixels[i - w] if y > 0 else 0
+        c = pixels[i - w - 1] if x > 0 and y > 0 else 0
+        # Paeth predictor
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        if pa <= pb and pa <= pc: pred = a
+        elif pb <= pc: pred = b
+        else: pred = c
+        out[i] = pixels[i] ^ pred
+    return out
+
 
 def _eg2_encode_frame(pixels, bpp, w, h):
-    """Encode a frame with best diff mode + EG-2 zero-bit RLE.
-    Returns (bytearray, best_mode)."""
+    """Encode a frame with best (diff mode, EG order) combo.
+    Tries modes 0-3 (raw/left/up/diag) + 4 (paeth), EG orders 1-3.
+    Header: 3 bits mode + 2 bits (order-1), then EG zero-run bitstream.
+    Returns (bytearray, best_mode, best_order)."""
     best_bytes = None
     best_mode = 0
-    for mode in range(4):
-        diff = _apply_diff_mode(pixels, w, h, mode)
+    best_order = 2
+    for mode in range(5):
+        if mode == 4:
+            diff = _apply_paeth(pixels, w, h)
+        else:
+            diff = _apply_diff_mode(pixels, w, h, mode)
         # Convert to bitstream (MSB first per pixel)
         bitstream = []
         for p in diff:
             for b in range(bpp - 1, -1, -1):
                 bitstream.append((p >> b) & 1)
-        # Encode: 2-bit mode header, then alternating zero-runs / 1-bits
-        out_bits = [(mode >> 1) & 1, mode & 1]
-        i = 0; nb = len(bitstream)
-        while i < nb:
-            # Count zero-run
-            zero_run = 0
-            while i < nb and bitstream[i] == 0:
-                zero_run += 1; i += 1
-            out_bits.extend(_eg2_encode_bits(zero_run))
-            if i < nb:
-                i += 1  # consume the 1-bit (implicit)
-        # Pack bits into bytes
-        out = bytearray()
-        for j in range(0, len(out_bits), 8):
-            byte = 0
-            for b in range(min(8, len(out_bits) - j)):
-                byte |= out_bits[j + b] << b
-            out.append(byte)
-        if best_bytes is None or len(out) < len(best_bytes):
-            best_bytes = out
-            best_mode = mode
-    return best_bytes, best_mode
+        for order in (1, 2, 3):
+            # Header: 3 bits mode (LSB first), 2 bits (order-1) (LSB first)
+            out_bits = [
+                mode & 1, (mode >> 1) & 1, (mode >> 2) & 1,
+                (order - 1) & 1, ((order - 1) >> 1) & 1
+            ]
+            i = 0; nb = len(bitstream)
+            while i < nb:
+                zero_run = 0
+                while i < nb and bitstream[i] == 0:
+                    zero_run += 1; i += 1
+                out_bits.extend(_eg_encode_bits(zero_run, order))
+                if i < nb:
+                    i += 1  # consume the 1-bit (implicit)
+            # Pack bits into bytes
+            out = bytearray()
+            for j in range(0, len(out_bits), 8):
+                byte = 0
+                for b in range(min(8, len(out_bits) - j)):
+                    byte |= out_bits[j + b] << b
+                out.append(byte)
+            if best_bytes is None or len(out) < len(best_bytes):
+                best_bytes = out
+                best_mode = mode
+                best_order = order
+    return best_bytes, best_mode, best_order
 
 
 def encode_type4(name, frames_pixels, fw, fh, bpp=4, palette=None):
-    """Type 4: XOR-ref + EG-2 zero-bit RLE with per-frame diff modes.
-    Same block layout as type 3 but enc byte = 4, frame data is EG-2 bitstream.
-    Each frame's data starts with a 2-bit diff mode header."""
+    """Type 4: XOR-ref + EG zero-bit RLE with per-frame diff modes + EG order.
+    Each frame's data starts with 5-bit header: 3 bits mode, 2 bits (order-1)."""
     n = len(frames_pixels)
     bx, by, bw, bh = get_bbox(frames_pixels, fw, fh)
     cropped = [crop_pixels(f, fw, bx, by, bw, bh) for f in frames_pixels]
@@ -687,19 +715,22 @@ def encode_type4(name, frames_pixels, fw, fh, bpp=4, palette=None):
     refs = []
     frame_data = []
     modes = []
+    orders = []
     for i in range(n):
         best_ref = 255
-        best_enc, best_mode = _eg2_encode_frame(cropped[i], bpp, bw, bh)
+        best_enc, best_mode, best_order = _eg2_encode_frame(cropped[i], bpp, bw, bh)
         for r in range(i):
             xor_diff = [cropped[i][j] ^ cropped[r][j] for j in range(npix)]
-            enc, mode = _eg2_encode_frame(xor_diff, bpp, bw, bh)
+            enc, mode, order = _eg2_encode_frame(xor_diff, bpp, bw, bh)
             if len(enc) < len(best_enc):
                 best_enc = enc
                 best_ref = r
                 best_mode = mode
+                best_order = order
         refs.append(best_ref)
         frame_data.append(best_enc)
         modes.append(best_mode)
+        orders.append(best_order)
 
     # Build block (same layout as type 3)
     block = bytearray()
@@ -724,8 +755,8 @@ def encode_type4(name, frames_pixels, fw, fh, bpp=4, palette=None):
 
     total = sum(len(d) for d in frame_data)
     ref_summary = sum(1 for r in refs if r != 255)
-    mode_names = ['_', 'L', 'U', 'D']
-    mode_str = ''.join(mode_names[m] for m in modes)
+    mode_names = ['_', 'L', 'U', 'D', 'P']
+    mode_str = ''.join(f"{mode_names[m]}{o}" for m, o in zip(modes, orders))
     return block, f"EG {bw}x{bh} data={total}b refs={ref_summary}/{n} m={mode_str}"
 
 
@@ -1308,7 +1339,7 @@ def build_level_data(tileset, bg_tileset, map_data):
     # Encode as single EG-2 frame (tiles stacked vertically: 16 wide)
     tile_w = 16
     tile_h = 16 * num_rt
-    tile_eg2, tile_mode = _eg2_encode_frame(quantized, tile_bpp, tile_w, tile_h)
+    tile_eg2, tile_mode, tile_order = _eg2_encode_frame(quantized, tile_bpp, tile_w, tile_h)
 
     # Pack: [bpp] [npal_hi:npal_lo packed nibbles...] [eg2 data]
     tile_blob = bytearray()
