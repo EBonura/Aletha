@@ -603,6 +603,132 @@ def encode_type3(name, frames_pixels, fw, fh, bpp=4, palette=None,
     return block, f"{tag}{rd_tag} {bw}x{bh} data={total}b refs={ref_summary}/{n}"
 
 
+# ── Type 4: Referenced XOR + EG-2 zero-bit RLE with diff modes ──
+
+def _apply_diff_mode(pixels, w, h, mode):
+    """Apply differential encoding: 0=raw, 1=XOR-left, 2=XOR-up, 3=XOR-diag."""
+    if mode == 0:
+        return list(pixels)
+    out = list(pixels)
+    # Process in reverse so each pixel depends on original neighbors only
+    for i in range(len(pixels) - 1, -1, -1):
+        x = i % w; y = i // w
+        if mode == 1:
+            ref = pixels[i - 1] if x > 0 else 0
+        elif mode == 2:
+            ref = pixels[(y - 1) * w + x] if y > 0 else 0
+        elif mode == 3:
+            ref = pixels[(y - 1) * w + x - 1] if y > 0 and x > 0 else 0
+        out[i] = pixels[i] ^ ref
+    return out
+
+
+def _eg2_encode_bits(val):
+    """Exp-Golomb order 2: encode non-negative integer as bit list."""
+    val2 = val + 4  # val + (1 << k) where k=2
+    n = val2.bit_length()
+    prefix_len = n - 1 - 2  # n - 1 - k
+    bits = []
+    for _ in range(prefix_len):
+        bits.append(0)
+    for b in range(n - 1, -1, -1):
+        bits.append((val2 >> b) & 1)
+    return bits
+
+
+def _eg2_encode_frame(pixels, bpp, w, h):
+    """Encode a frame with best diff mode + EG-2 zero-bit RLE.
+    Returns (bytearray, best_mode)."""
+    best_bytes = None
+    best_mode = 0
+    for mode in range(4):
+        diff = _apply_diff_mode(pixels, w, h, mode)
+        # Convert to bitstream (MSB first per pixel)
+        bitstream = []
+        for p in diff:
+            for b in range(bpp - 1, -1, -1):
+                bitstream.append((p >> b) & 1)
+        # Encode: 2-bit mode header, then alternating zero-runs / 1-bits
+        out_bits = [(mode >> 1) & 1, mode & 1]
+        i = 0; nb = len(bitstream)
+        while i < nb:
+            # Count zero-run
+            zero_run = 0
+            while i < nb and bitstream[i] == 0:
+                zero_run += 1; i += 1
+            out_bits.extend(_eg2_encode_bits(zero_run))
+            if i < nb:
+                i += 1  # consume the 1-bit (implicit)
+        # Pack bits into bytes
+        out = bytearray()
+        for j in range(0, len(out_bits), 8):
+            byte = 0
+            for b in range(min(8, len(out_bits) - j)):
+                byte |= out_bits[j + b] << b
+            out.append(byte)
+        if best_bytes is None or len(out) < len(best_bytes):
+            best_bytes = out
+            best_mode = mode
+    return best_bytes, best_mode
+
+
+def encode_type4(name, frames_pixels, fw, fh, bpp=4, palette=None):
+    """Type 4: XOR-ref + EG-2 zero-bit RLE with per-frame diff modes.
+    Same block layout as type 3 but enc byte = 4, frame data is EG-2 bitstream.
+    Each frame's data starts with a 2-bit diff mode header."""
+    n = len(frames_pixels)
+    bx, by, bw, bh = get_bbox(frames_pixels, fw, fh)
+    cropped = [crop_pixels(f, fw, bx, by, bw, bh) for f in frames_pixels]
+    if bpp < 4 and palette:
+        cropped = [quantize_pixels(f, palette) for f in cropped]
+    npix = bw * bh
+
+    # For each frame, pick the ref that minimizes encoded size
+    refs = []
+    frame_data = []
+    modes = []
+    for i in range(n):
+        best_ref = 255
+        best_enc, best_mode = _eg2_encode_frame(cropped[i], bpp, bw, bh)
+        for r in range(i):
+            xor_diff = [cropped[i][j] ^ cropped[r][j] for j in range(npix)]
+            enc, mode = _eg2_encode_frame(xor_diff, bpp, bw, bh)
+            if len(enc) < len(best_enc):
+                best_enc = enc
+                best_ref = r
+                best_mode = mode
+        refs.append(best_ref)
+        frame_data.append(best_enc)
+        modes.append(best_mode)
+
+    # Build block (same layout as type 3)
+    block = bytearray()
+    block.append(n)
+    block.append(4)  # type 4 = EG-2
+    block.append(bpp)
+    if bpp < 4 and palette:
+        block.extend(pack_palette(palette))
+    block.append(bx)
+    block.append(by)
+    block.append(bw)
+    block.append(bh)
+    for r in range(n):
+        block.append(refs[r])
+    offset = 0
+    for d in frame_data:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(d)
+    for d in frame_data:
+        block.extend(d)
+
+    total = sum(len(d) for d in frame_data)
+    ref_summary = sum(1 for r in refs if r != 255)
+    mode_names = ['_', 'L', 'U', 'D']
+    mode_str = ''.join(mode_names[m] for m in modes)
+    return block, f"EG {bw}x{bh} data={total}b refs={ref_summary}/{n} m={mode_str}"
+
+
 # ── Pick best encoding per animation ──
 
 def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
@@ -610,14 +736,7 @@ def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
         bpp = min_bpp_for_frames(frames_pixels)
         palette = build_palette(frames_pixels, bpp) if bpp < 4 else None
     n = len(frames_pixels)
-    rx_block, rx_info = encode_type3(name, frames_pixels, fw, fh, bpp, palette,
-                                     use_rowdelta=False)
-    rd_block, rd_info = encode_type3(name, frames_pixels, fw, fh, bpp, palette,
-                                     use_rowdelta=True)
-    if len(rd_block) < len(rx_block):
-        block, info_str = rd_block, rd_info
-    else:
-        block, info_str = rx_block, rx_info
+    block, info_str = encode_type4(name, frames_pixels, fw, fh, bpp, palette)
     bpp_tag = f" [{bpp}bpp]"
     info = f"    {name:12s}: {n:2d}f, {info_str} {len(block)}b{bpp_tag}"
     return block, info
@@ -1168,20 +1287,38 @@ def build_level_data(tileset, bg_tileset, map_data):
             fy = int(vflip)
         return (rt_id << 2) | (fx << 1) | fy
 
-    # Step 3: Extended nibble-RLE compress all tile pixels as single blob
-    # Format: (color<<4 | run-1) for runs 1..15
-    #         (color<<4 | 0xF) + ext_byte for runs 16..271
-    # No per-tile offset table needed — decoded sequentially.
+    # Step 3: EG-2 compress all tile pixels as single blob at reduced bpp
     all_pixels = []
     for pixels in rt_tiles:
         all_pixels.extend(pixels)
-
-    tile_blob = ext_nibble_rle_encode(all_pixels)
-    old_size = sum(len(nibble_rle_encode(p)) for p in rt_tiles) + num_rt * 2
     raw_size = num_rt * 128
-    print(f"  Tile pixels: {len(tile_blob)}b compressed"
+
+    # Build tile palette and quantize
+    tile_colors = sorted(set(all_pixels))
+    tile_bpp = max(1, tile_colors[-1].bit_length()) if tile_colors else 4
+    # Find minimum bpp that fits the palette
+    for bpp_try in [1, 2, 3, 4]:
+        if (1 << bpp_try) >= len(tile_colors):
+            tile_bpp = bpp_try
+            break
+    tile_pal = tile_colors + [0] * ((1 << tile_bpp) - len(tile_colors))
+    tile_pal_map = {c: i for i, c in enumerate(tile_colors)}
+    quantized = [tile_pal_map[c] for c in all_pixels]
+
+    # Encode as single EG-2 frame (tiles stacked vertically: 16 wide)
+    tile_w = 16
+    tile_h = 16 * num_rt
+    tile_eg2, tile_mode = _eg2_encode_frame(quantized, tile_bpp, tile_w, tile_h)
+
+    # Pack: [bpp] [npal_hi:npal_lo packed nibbles...] [eg2 data]
+    tile_blob = bytearray()
+    tile_blob.append(tile_bpp)
+    tile_blob.extend(pack_palette(tile_pal))
+    tile_blob.extend(tile_eg2)
+
+    print(f"  Tile pixels: {len(tile_blob)}b EG-2 {tile_bpp}bpp"
           f" (from {raw_size}b, {len(tile_blob)*100//raw_size}%)"
-          f" (old: {old_size}b, saved {old_size - len(tile_blob)}b)")
+          f" pal={tile_pal}")
 
     # Step 4: Build cell grids, then auto-encode each layer
     layer_modes = []
@@ -1367,10 +1504,7 @@ def build_cart():
     # mini-chunk: [na=1][cell_w=0][cell_h=0][off_lo=0][off_hi=0][block]
     title_chunk = bytearray([1, 0, 0, 0, 0]) + title_block
     font_chunk  = bytearray([1, 0, 0, 0, 0]) + font_block
-    title_base_addr = len(char_chunk)
-    font_base_addr  = title_base_addr + len(title_chunk)
     print(f"  title_chunk: {len(title_chunk)}b  font_chunk: {len(font_chunk)}b")
-    print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x}")
 
     # ── Spider enemy ──
     print("\nExtracting spider frames...")
@@ -1403,8 +1537,7 @@ def build_cart():
         spider_chunk.append(off & 0xFF)
         spider_chunk.append((off >> 8) & 0xFF)
     spider_chunk.extend(sp_data)
-    spider_base_addr = font_base_addr + len(font_chunk)
-    print(f"  spider_chunk: {len(spider_chunk)}b  base=0x{spider_base_addr:04x}")
+    print(f"  spider_chunk: {len(spider_chunk)}b")
     # per-frame horizontal center of non-transparent pixels (for draw anchoring)
     sp_anc_parts = []
     for sp_name, _, _ in SPIDER_ANIMS:
@@ -1442,8 +1575,7 @@ def build_cart():
         wheelbot_chunk.append(off & 0xFF)
         wheelbot_chunk.append((off >> 8) & 0xFF)
     wheelbot_chunk.extend(wb_data)
-    wheelbot_base_addr = spider_base_addr + len(spider_chunk)
-    print(f"  wheelbot_chunk: {len(wheelbot_chunk)}b  base=0x{wheelbot_base_addr:04x}")
+    print(f"  wheelbot_chunk: {len(wheelbot_chunk)}b")
     # per-frame horizontal center of non-transparent pixels (for draw anchoring)
     wb_anc_parts = []
     for wb_name, _, _ in WHEELBOT_ANIMS:
@@ -1476,15 +1608,21 @@ def build_cart():
     gfx_buf = bytearray(8192)
     gfx_buf[:len(char_chunk)] = char_chunk
     gfx_end = len(char_chunk)
+    title_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(title_chunk)] = title_chunk
     gfx_end += len(title_chunk)
+    font_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(font_chunk)] = font_chunk
     gfx_end += len(font_chunk)
+    spider_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(spider_chunk)] = spider_chunk
     gfx_end += len(spider_chunk)
+    wheelbot_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(wheelbot_chunk)] = wheelbot_chunk
     gfx_end += len(wheelbot_chunk)
     total = gfx_end
+    print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x}")
+    print(f"  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}")
 
     print(f"\n=== TOTAL ===")
     print(f"  {num_anims} anims ({len(ANIMS)} player + {len(ent_anim_info)} entity), {total_frames} frames")

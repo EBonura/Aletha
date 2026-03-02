@@ -1228,7 +1228,7 @@ function autoLoad() { try { const raw=localStorage.getItem("pico8_level_autosave
   map=layers[curLayer].map;mapXform=layers[curLayer].xform;
   if(d.flags) for(let i=0;i<Math.min(d.flags.length,tileFlags.length);i++) tileFlags[i]=d.flags[i];
   if(d.spawnX!=null){spawnX=d.spawnX;spawnY=d.spawnY;}
-  if(d.bandColors) for(let i=0;i<Math.min(d.bandColors.length,bandColors.length);i++) bandColors[i]=d.bandColors[i];
+  if(d.bandColors){for(let i=0;i<Math.min(d.bandColors.length,bandColors.length);i++) bandColors[i]=d.bandColors[i];remapAllTiles();}
   if(d.parallax) for(let i=0;i<2;i++) layerParallax[i]=d.parallax[i]??layerParallax[i];
   document.querySelectorAll(".parallax-input").forEach(inp=>{inp.value=layerParallax[parseInt(inp.dataset.layer)];});
   document.getElementById("map-w").value=mapW;document.getElementById("map-h").value=mapH;return true;} catch(e){return false;} }
@@ -1301,7 +1301,7 @@ function applyLevelData(d) {
   mapXform = layers[curLayer].xform;
   if (d.flags) for (let i=0; i<Math.min(d.flags.length, tileFlags.length); i++) tileFlags[i] = d.flags[i];
   if (d.spawnX != null) { spawnX = d.spawnX; spawnY = d.spawnY; }
-  if (d.bandColors) { for (let i=0; i<Math.min(d.bandColors.length, bandColors.length); i++) bandColors[i] = d.bandColors[i]; remapAllTiles(); }
+  if (d.bandColors) { for (let i=0; i<Math.min(d.bandColors.length, bandColors.length); i++) bandColors[i] = d.bandColors[i]; remapAllTiles(); refreshPaletteTiles(); buildBandEditor(); }
   if (d.parallax) { for (let i=0; i<2; i++) layerParallax[i] = d.parallax[i] ?? layerParallax[i]; }
   entities = (d.entities || []).map(e => ({type: e.type, x: e.x, y: e.y, group: e.group}));
   selectedEntity = null;

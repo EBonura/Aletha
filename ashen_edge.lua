@@ -93,37 +93,45 @@ function pk2(a)
  return peek(a)+peek(a+1)*256
 end
 
-function decode_rle(off,npix,bpp)
- bpp=bpp or 4
- local run_bits=8-bpp
- local run_mask=(1<<run_bits)-1
- local color_mask=(1<<bpp)-1
- local buf={}
- local idx=1
- while idx<=npix do
-  local b=peek(off)
-  off+=1
-  local color=(b>>run_bits)&color_mask
-  local r=b&run_mask
-  if r==run_mask then
-   r=run_mask+1+peek(off)
-   off+=1
-  else
-   r=r+1
-  end
-  for i=0,r-1 do buf[idx+i]=color end
-  idx+=r
+function decode_eg2(off,npix,bpp,w)
+ local by=peek(off) off+=1
+ local bi=0
+ local function rb()
+  local v=(by>>bi)&1 bi+=1
+  if bi>7 then by=peek(off) off+=1 bi=0 end
+  return v
  end
- return buf,off
-end
-
-function decode_bits(off,npix)
+ local function eg()
+  local z=0
+  while rb()==0 do z+=1 end
+  local v=1
+  for i=1,z+2 do v=v*2+rb() end
+  return v-4
+ end
+ local mode=rb()*2+rb()
  local buf={}
- local b,bi=0,8
- for i=1,npix do
-  if bi>7 then b=peek(off) off+=1 bi=0 end
-  buf[i]=(b>>7-bi)&1
-  bi+=1
+ local pb,pv,pi=0,0,1
+ while pi<=npix do
+  local z=eg()
+  for i=1,z do
+   pv=pv*2 pb+=1
+   if pb==bpp then buf[pi]=pv pi+=1 pv=0 pb=0 end
+  end
+  if pi<=npix then
+   pv=pv*2+1 pb+=1
+   if pb==bpp then buf[pi]=pv pi+=1 pv=0 pb=0 end
+  end
+ end
+ if mode==1 then
+  for i=2,npix do
+   if (i-1)%w>0 then buf[i]=buf[i]^^buf[i-1] end
+  end
+ elseif mode==2 then
+  for i=w+1,npix do buf[i]=buf[i]^^buf[i-w] end
+ elseif mode==3 then
+  for i=w+2,npix do
+   if (i-1)%w>0 then buf[i]=buf[i]^^buf[i-w-1] end
+  end
  end
  return buf
 end
@@ -134,13 +142,13 @@ function read_anim(a,cb)
  local aoff=pk2(cb+3+(a-1)*2)
  local ab=cb+3+na*2+aoff
  local nf=peek(ab)
- local enc=peek(ab+1)
+ -- skip enc byte (ab+1)
  local bpp=peek(ab+2)
  local np=bpp<4 and (1<<bpp) or 0
  local pal={}
  for i=0,np-1 do
-  local b=peek(ab+3+flr(i/2))
-  pal[i+1]=(i%2==0) and ((b>>4)&0xf) or (b&0xf)
+  local b=peek(ab+3+i\2)
+  if i%2==0 then pal[i+1]=(b>>4)&0xf else pal[i+1]=b&0xf end
  end
  local pal_bytes=flr((np+1)/2)
  local h=ab+3+pal_bytes
@@ -152,7 +160,7 @@ function read_anim(a,cb)
  local fo_off=ref_off+nf
  local data_off=fo_off+nf*2
  return {
-  nf=nf,bpp=bpp,pal=pal,rd=enc&0x80>0,
+  nf=nf,bpp=bpp,pal=pal,
   bx=bx,by=by,bw=bw,bh=bh,
   ref_off=ref_off,fo_off=fo_off,
   data_off=data_off
@@ -170,15 +178,9 @@ function decode_anim(ai)
  for f=1,ai.nf do
   local ref=peek(ai.ref_off+f-1)
   local foff=pk2(ai.fo_off+(f-1)*2)
-  local d=ai.bpp==1 and decode_bits(ai.data_off+foff,npix) or decode_rle(ai.data_off+foff,npix,ai.bpp)
+  local d=decode_eg2(ai.data_off+foff,npix,ai.bpp,ai.bw)
   local base=ref==255 and zeros or frames[ref+1][1]
   for i=1,npix do d[i]=d[i]^^base[i] end
-  if ai.rd then
-   for y=1,ai.bh-1 do
-    local o=y*ai.bw
-    for x=1,ai.bw do d[o+x]=d[o+x]^^d[o+x-ai.bw] end
-   end
-  end
   frames[f]={d,ai.bx,ai.by,ai.bw,ai.bh}
  end
  if ai.bpp<4 and #ai.pal>0 then
@@ -193,25 +195,21 @@ function decode_anim(ai)
 end
 
 function cache_anims()
- -- decode main anims from gfx memory
  local na=peek(char_base)
  for a=1,na do
   local ai=read_anim(a,char_base)
   acache[a]={ai=ai,frames=decode_anim(ai),cw=cell_w,ch=cell_h}
  end
- -- decode title and font from gfx memory
  local ai=read_anim(1,title_base)
  acache[a_title]={ai=ai,frames=decode_anim(ai),cw=128,ch=128}
  ai=read_anim(1,font_base)
  acache[a_font]={ai=ai,frames=decode_anim(ai),cw=font_cw,ch=font_ch}
- -- decode spider anims from gfx memory
  local sna=peek(spider_base)
  for a=1,sna do
   ai=read_anim(a,spider_base)
   local idx=a_spi+a-1
   acache[idx]={ai=ai,frames=decode_anim(ai),cw=spider_cw,ch=spider_ch}
  end
- -- decode wheel bot anims from gfx memory
  local wna=peek(wheelbot_base)
  for a=1,wna do
   ai=read_anim(a,wheelbot_base)
@@ -318,20 +316,21 @@ function load_tiles()
 
  -- tile blob starts after header+mode bytes
  local tblob=b+12+nl
+ local p=tblob+tbsz
 
  -- decode ALL data from __map__ into
  -- lua tables before writing to memory
 
- -- 1. decode all tile pixels as single blob
- local all_pix,p=decode_rle(tblob,nt*256)
- local tile_pix={}
- for t=0,nt-1 do
-  tile_pix[t]={}
-  local base=t*256
-  for i=1,256 do
-   tile_pix[t][i]=all_pix[base+i]
-  end
+ -- 1. decode all tile pixels via EG-2
+ local tbpp=peek(tblob)
+ local tnp=1<<tbpp
+ local tpal={}
+ for i=0,tnp-1 do
+  local tb=peek(tblob+1+i\2)
+  if i%2==0 then tpal[i]=(tb>>4)&0xf else tpal[i]=tb&0xf end
  end
+ local tpal_bytes=flr((tnp+1)/2)
+ local all_idx=decode_eg2(tblob+1+tpal_bytes,nt*256,tbpp,16)
 
  -- 2. decode each layer's map data
  for L=1,nl do
@@ -414,41 +413,37 @@ function load_tiles()
  -- 4. write main tiles (1..nst) to spritesheet
  local nst=lvl_nst
  for t=0,nst-1 do
-  local pix=tile_pix[t]
+  local base=t*256
   local tcol=t%8
   local trow=t\8
   for py=0,15 do
    local dst=(trow*16+py)*64+tcol*8
    for px=0,7 do
-    local i=py*16+px*2
-    local lo=pix[i+1]&0xf
-    local hi=pix[i+2]&0xf
+    local i=base+py*16+px*2
+    local lo=tpal[all_idx[i+1]]&0xf
+    local hi=tpal[all_idx[i+2]]&0xf
     poke(dst+px,lo|(hi<<4))
    end
   end
  end
-
- -- 4. write bg tiles (nst+1..nt) to user
- -- memory at 0x4300 (128 bytes each, 4bpp)
- -- replace transparent with bg_clr so
- -- memcpy to screen works without
- -- per-pixel transparency checks
+ -- 5. write bg tiles to user memory
  local bg_base=0x8000
- local bg_clr=1 -- matches cls() color
+ local bg_clr=1
  for t=nst,nt-1 do
-  local pix=tile_pix[t]
+  local base=t*256
   local addr=bg_base+(t-nst)*128
   for py=0,15 do
    for px=0,7 do
-    local i=py*16+px*2
-    local lo=pix[i+1]&0xf
-    local hi=pix[i+2]&0xf
+    local i=base+py*16+px*2
+    local lo=tpal[all_idx[i+1]]&0xf
+    local hi=tpal[all_idx[i+2]]&0xf
     if lo==trans then lo=bg_clr end
     if hi==trans then hi=bg_clr end
     poke(addr+py*8+px,lo|(hi<<4))
    end
   end
  end
+ all_idx=nil
 end
 
 function tile_at(tx,ty)
