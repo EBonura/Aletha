@@ -45,18 +45,19 @@ SPIDER_ANIMS = [
     ("sp_death",  "death.png",                         None),
 ]
 WHEELBOT_DIR = os.path.join(DIR, "assets", "wheelbot")
-WHEELBOT_W, WHEELBOT_H = 112, 26
+WHEELBOT_W, WHEELBOT_H = 48, 26
+# (name, filename, src_fw, src_fh, frame_override, frame_select)
 WHEELBOT_ANIMS = [
-    ("wb_idle",     "idle 112x26.png",      None),
-    ("wb_move",     "move 112x26.png",      None),
-    ("wb_charge",   "charge 112x26.png",    None),
-    ("wb_shoot",    "shoot 112x26.png",     None),
-    ("wb_firedash", "fire dash 112x26.png", None),
-    ("wb_wake",     "wake 112x26.png",      None),
-    ("wb_damaged",  "damaged 112x26.png",   None),
-    ("wb_death",    "death 112x26.png",     None),
+    ("wb_idle",     "idle 112x26.png",      32, 26, None, None),
+    ("wb_move",     "move 112x26.png",      32, 26, None, None),
+    ("wb_charge",   "charge 112x26.png",    48, 26, None, None),
+    ("wb_shoot",    "shoot 112x26.png",     48, 26, None, None),
+    ("wb_firedash", "fire dash 112x26.png",112, 26, None, None),
+    ("wb_wake",     "wake 112x26.png",      32, 26, None, None),
+    ("wb_damaged",  "damaged 112x26.png",   32, 26, None, None),
+    ("wb_death",    "death 112x26.png",     32, 26, None, None),
 ]
-HELLBOT_DIR = os.path.expanduser("~/Downloads/DARK Edition/Sprites/Hell Bot DARK")
+HELLBOT_DIR = os.path.join(DIR, "assets", "hellbot")
 HELLBOT_W, HELLBOT_H = 92, 36
 HELLBOT_ANIMS = [
     ("hb_idle",   "idle 92x36.png",   None),
@@ -66,9 +67,21 @@ HELLBOT_ANIMS = [
     ("hb_hit",    "hit 92x36.png",    None),
     ("hb_death",  "death 92x36.png",  None),
 ]
-BOX_SRC = os.path.expanduser("~/Desktop/Aseprite/border test.png")
-BOX_S = 12  # corner sprite size (square for rotation-based flipping)
-PORTAL_DIR = os.path.expanduser("~/Downloads/DARK Edition/Animated objects/Portal")
+BOSS_DIR = os.path.join(DIR, "assets", "boss")
+BOSS_W, BOSS_H = 48, 32
+# (name, filename, src_fw, src_fh, frame_override, frame_select)
+# frame_select: None=all, list of indices=pick those, int=take every Nth
+BOSS_ANIMS = [
+    ("bk_idle",   "idle(32x32).png",                    32, 32, None, [0,2,4,6,8,10]),  # 12→6
+    ("bk_run",    "Run (32x32).png",                    32, 32, None, None),             # 8
+    ("bk_attack", "Double Slash no VFX (48x32).png",    48, 32, None, [0,2,4,6,8,10,12,13]),  # 14→8
+    ("bk_charge", "charge(48x32).png",                  48, 32, None, None),             # 6
+    ("bk_hit",    "Hit (32x32)).png",                   32, 32, None, None),             # 2
+    ("bk_death",  "death or teleport (168x79).png",    168, 79, None, [0,1,2]),          # 11→3
+]
+BOX_SRC = os.path.join(DIR, "assets", "border_corner.png")
+BOX_S = 13  # corner sprite size (square)
+PORTAL_DIR = os.path.join(DIR, "assets", "portal")
 PORTAL_SRC_W, PORTAL_SRC_H = 28, 41
 PORTAL_CROP_Y = 30  # top rows to skip (all transparent)
 PORTAL_W, PORTAL_H = 28, PORTAL_SRC_H - 30  # 28x11
@@ -180,6 +193,67 @@ def extract_frames_custom(img_path, asset_dir, cw, ch, nframes=None):
                 else:
                     pixels.append(nearest_p8(r, g, b))
         frames.append(pixels)
+    return frames
+
+
+def extract_frames_boss(img_path, asset_dir, src_fw, src_fh, target_w, target_h, frame_select=None):
+    """Extract frames from a vertical strip, centering content into target_w x target_h cells.
+
+    Handles source frames of any size — content is bottom-center aligned into the target cell
+    (characters stand on the ground). frame_select: list of frame indices to keep, or None for all.
+    """
+    img = Image.open(os.path.join(asset_dir, img_path)).convert("RGBA")
+    w, h = img.size
+    nframes = h // src_fh
+
+    indices = frame_select if frame_select is not None else list(range(nframes))
+
+    frames = []
+    for fi in indices:
+        if fi >= nframes:
+            continue
+        # Find content bbox in this source frame
+        y0 = fi * src_fh
+        min_x, min_y, max_x, max_y = src_fw, src_fh, -1, -1
+        for y in range(src_fh):
+            for x in range(src_fw):
+                if img.getpixel((x, y0 + y))[3] > 0:
+                    if x < min_x: min_x = x
+                    if x > max_x: max_x = x
+                    if y < min_y: min_y = y
+                    if y > max_y: max_y = y
+
+        if max_x < 0:  # empty frame
+            frames.append([TRANS] * (target_w * target_h))
+            continue
+
+        content_w = max_x - min_x + 1
+        content_h = max_y - min_y + 1
+
+        # Clamp content to target size
+        crop_w = min(content_w, target_w)
+        crop_h = min(content_h, target_h)
+
+        # Center horizontally, bottom-align vertically in target cell
+        dst_x = (target_w - crop_w) // 2
+        dst_y = target_h - crop_h
+
+        # Source crop origin (center of content)
+        src_cx = min_x + content_w // 2
+        src_x0 = src_cx - crop_w // 2
+        src_y0 = min_y + content_h - crop_h  # bottom-align from source content
+
+        pixels = [TRANS] * (target_w * target_h)
+        for dy in range(crop_h):
+            for dx in range(crop_w):
+                sx = src_x0 + dx
+                sy = y0 + src_y0 + dy
+                if 0 <= sx < src_fw and 0 <= sy < y0 + src_fh:
+                    r, g, b, a = img.getpixel((sx, sy))
+                    if a > 0:
+                        pixels[(dst_y + dy) * target_w + (dst_x + dx)] = nearest_p8(r, g, b)
+        frames.append(pixels)
+
     return frames
 
 
@@ -1714,8 +1788,8 @@ def build_cart():
     print("\nExtracting wheel bot frames...")
     wb_anim_blocks = []
     wb_all_frames = {}
-    for wb_name, wb_file, wb_nf in WHEELBOT_ANIMS:
-        frames = extract_frames_custom(wb_file, WHEELBOT_DIR, WHEELBOT_W, WHEELBOT_H, wb_nf)
+    for wb_name, wb_file, src_fw, src_fh, wb_nf, frame_sel in WHEELBOT_ANIMS:
+        frames = extract_frames_boss(wb_file, WHEELBOT_DIR, src_fw, src_fh, WHEELBOT_W, WHEELBOT_H, frame_sel)
         wb_all_frames[wb_name] = frames
         block, info = encode_animation(wb_name, frames, WHEELBOT_W, WHEELBOT_H)
         wb_anim_blocks.append((wb_name, block))
@@ -1739,7 +1813,7 @@ def build_cart():
     print(f"  wheelbot_chunk: {len(wheelbot_chunk)}b")
     # per-frame horizontal center of non-transparent pixels (for draw anchoring)
     wb_anc_parts = []
-    for wb_name, _, _ in WHEELBOT_ANIMS:
+    for wb_name, _, _, _, _, _ in WHEELBOT_ANIMS:
         frames = wb_all_frames[wb_name]
         centers = []
         for f in frames:
@@ -1788,6 +1862,46 @@ def build_cart():
         hb_anc_parts.append(",".join(str(c) for c in centers))
     hb_anc_str = "|".join(hb_anc_parts)
 
+    # ── Blood King boss ──
+    print("\nExtracting Blood King boss frames...")
+    bk_anim_blocks = []
+    bk_all_frames = {}
+    for bk_name, bk_file, src_fw, src_fh, nf_override, frame_sel in BOSS_ANIMS:
+        frames = extract_frames_boss(bk_file, BOSS_DIR, src_fw, src_fh, BOSS_W, BOSS_H, frame_sel)
+        # Remap brown (4) -> red (8) for blood color, merge near-black to 0
+        frames = [[8 if c == 4 else c for c in f] for f in frames]
+        bk_all_frames[bk_name] = frames
+        block, info = encode_animation(bk_name, frames, BOSS_W, BOSS_H, bpp=2)
+        bk_anim_blocks.append((bk_name, block))
+        total_frames += len(frames)
+        print(info)
+    # pack into a multi-anim chunk
+    bk_na = len(bk_anim_blocks)
+    bk_offsets = []
+    bk_data = bytearray()
+    for _, blk in bk_anim_blocks:
+        bk_offsets.append(len(bk_data))
+        bk_data.extend(blk)
+    boss_chunk = bytearray()
+    boss_chunk.append(bk_na)
+    boss_chunk.append(BOSS_W)
+    boss_chunk.append(BOSS_H)
+    for off in bk_offsets:
+        boss_chunk.append(off & 0xFF)
+        boss_chunk.append((off >> 8) & 0xFF)
+    boss_chunk.extend(bk_data)
+    print(f"  boss_chunk: {len(boss_chunk)}b")
+    # per-frame horizontal center anchors
+    bk_anc_parts = []
+    for bk_name, _, _, _, _, _ in BOSS_ANIMS:
+        frames = bk_all_frames[bk_name]
+        centers = []
+        for f in frames:
+            xs = [idx % BOSS_W for idx, c in enumerate(f) if c != TRANS]
+            centers.append((min(xs) + max(xs)) // 2 if xs else BOSS_W // 2)
+        bk_anc_parts.append(",".join(str(c) for c in centers))
+    bk_anc_str = "|".join(bk_anc_parts)
+
     # ── Portal checkpoint ──
     print("\nExtracting portal frames...")
     ptl_img = Image.open(os.path.join(PORTAL_DIR, "idle 28x41.png")).convert("RGBA")
@@ -1822,18 +1936,15 @@ def build_cart():
     box_pixels = []
     for y in range(BOX_S):
         for x in range(BOX_S):
-            if y < box_img.height and x < box_img.width:
-                r, g, b, a = box_img.getpixel((x, y))
-                if a == 0:
-                    box_pixels.append(TRANS)
-                elif r > 200:
-                    box_pixels.append(7)   # white lines
-                elif r > 100:
-                    box_pixels.append(5)   # grey accents
-                else:
-                    box_pixels.append(0)   # dark fill
-            else:
+            r, g, b, a = box_img.getpixel((x, y))
+            if a == 0:
                 box_pixels.append(TRANS)
+            elif r > 200:
+                box_pixels.append(7)   # white lines
+            elif r > 100:
+                box_pixels.append(5)   # grey accents
+            else:
+                box_pixels.append(0)   # dark fill
     box_block, box_info = encode_animation("box_corner", [box_pixels], BOX_S, BOX_S, bpp=2, palette=[TRANS, 0, 7, 5])
     print(box_info)
     box_chunk = bytearray()
@@ -1894,6 +2005,9 @@ def build_cart():
     hellbot_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(hellbot_chunk)] = hellbot_chunk
     gfx_end += len(hellbot_chunk)
+    boss_base_addr = gfx_end
+    gfx_buf[gfx_end:gfx_end+len(boss_chunk)] = boss_chunk
+    gfx_end += len(boss_chunk)
     portal_base_addr = gfx_end
     gfx_buf[gfx_end:gfx_end+len(portal_chunk)] = portal_chunk
     gfx_end += len(portal_chunk)
@@ -1945,7 +2059,7 @@ def build_cart():
         print(f"\n  No music cart at {MUSIC_P8}, skipping music")
 
     print(f"\n  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}  hellbot_base=0x{hellbot_base_addr:04x}")
-    print(f"  portal_base=0x{portal_base_addr:04x}  hp_base=0x{hp_base_addr:04x}")
+    print(f"  boss_base=0x{boss_base_addr:04x}  portal_base=0x{portal_base_addr:04x}  hp_base=0x{hp_base_addr:04x}")
     print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x} (in __sfx__ slots {sfx_first_slot}-63, {sfx_slots_used} slots)")
 
     print(f"\n=== TOTAL ===")
@@ -2013,7 +2127,7 @@ def build_cart():
         "wb_firedash": "a_wbfd", "wb_wake": "a_wbwk",
         "wb_damaged": "a_wbd", "wb_death": "a_wbdt",
     }
-    wb_vars = [wb_var_map[name] for name, _, _ in WHEELBOT_ANIMS]
+    wb_vars = [wb_var_map[name] for name, _, _, _, _, _ in WHEELBOT_ANIMS]
     wb_lhs = ",".join(wb_vars)
     wb_base_idx = sp_base_idx + len(SPIDER_ANIMS)
     wb_rhs = ",".join(str(wb_base_idx + i) for i in range(len(WHEELBOT_ANIMS)))
@@ -2035,8 +2149,22 @@ def build_cart():
     gen_lines.append(f"hellbot_base={hellbot_base_addr} hellbot_cw={HELLBOT_W} hellbot_ch={HELLBOT_H}")
     gen_lines.append(f'_ha=split("{hb_anc_str}","|",false)')
     gen_lines.append("hb_anc={} for i=1,#_ha do hb_anc[a_hbi+i-1]=split(_ha[i]) end")
+    # blood king boss — in __gfx__, multi-anim chunk at boss_base
+    bk_var_map = {
+        "bk_idle": "a_bki", "bk_run": "a_bkr",
+        "bk_attack": "a_bka", "bk_charge": "a_bkc",
+        "bk_hit": "a_bkh", "bk_death": "a_bkd",
+    }
+    bk_vars = [bk_var_map[name] for name, _, _, _, _, _ in BOSS_ANIMS]
+    bk_lhs = ",".join(bk_vars)
+    bk_base_idx = hb_base_idx + len(HELLBOT_ANIMS)
+    bk_rhs = ",".join(str(bk_base_idx + i) for i in range(len(BOSS_ANIMS)))
+    gen_lines.append(f'{bk_lhs}=unpack(split"{bk_rhs}")')
+    gen_lines.append(f"boss_base={boss_base_addr} boss_cw={BOSS_W} boss_ch={BOSS_H}")
+    gen_lines.append(f'_bka=split("{bk_anc_str}","|",false)')
+    gen_lines.append("bk_anc={} for i=1,#_bka do bk_anc[a_bki+i-1]=split(_bka[i]) end")
     # portal checkpoint
-    ptl_base_idx = hb_base_idx + len(HELLBOT_ANIMS)
+    ptl_base_idx = bk_base_idx + len(BOSS_ANIMS)
     gen_lines.append(f"a_ptl={ptl_base_idx}")
     gen_lines.append(f"portal_base={portal_base_addr} portal_cw={PORTAL_W} portal_ch={PORTAL_H}")
     # box corner UI
@@ -2050,7 +2178,8 @@ def build_cart():
     wb_speeds  = [8,5,6,5,4,6,5,6]  # wheelbot: idle,move,charge,shoot,fdash,wake,damaged,death
     hb_speeds  = [8,5,5,5,5,6]  # hellbot: idle,run,attack,shoot,hit,death
     aspd = plr_speeds + ent_speeds + [30, 0]  # title=30, font=0
-    aspd += sp_speeds + wb_speeds + hb_speeds + [6, 0]  # portal=6, box=0
+    bk_speeds  = [8,5,5,5,5,6]  # boss: idle,run,attack,charge,hit,death
+    aspd += sp_speeds + wb_speeds + hb_speeds + bk_speeds + [6, 0]  # portal=6, box=0
     aspd_str = ",".join(str(v) for v in aspd)
     gen_lines.append(f'aspd=split"{aspd_str}"')
     # hp bar

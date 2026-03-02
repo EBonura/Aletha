@@ -295,12 +295,9 @@ function set_anim(a,s)
  if s then state=s end
 end
 
-function anim_nf()
- return acache[cur_anim].ai.nf
-end
-
 function anim_done()
- return cur_frame>=anim_nf()
+ local nf=acache[cur_anim].ai.nf
+ return cur_frame>=nf
   and anim_timer>=aspd[cur_anim]-1
 end
 
@@ -308,7 +305,7 @@ function tick_anim()
  anim_timer+=1
  if anim_timer>=aspd[cur_anim] then
   anim_timer=0
-  if cur_frame<anim_nf() then
+  if cur_frame<acache[cur_anim].ai.nf then
    cur_frame+=1
   elseif state=="idle" or state=="run" then
    cur_frame=1
@@ -685,31 +682,14 @@ function air_control(lr)
  end
 end
 
-function spawn_parts(wx,wy)
- -- spawn 3 bouncing red balls at world pos
- for i=1,3 do
-  add(parts,{
-   x=wx,y=wy,
-   vx=rnd(3)-1.5,
-   vy=-rnd(2)-1,
-   landed=false,
-   age=0
-  })
- end
-end
-
-function atk_box()
+function check_attacks()
  local ax0,ax1
  if facing>0 then
   ax0=px+cb_x1 ax1=ax0+14
  else
   ax1=px+cb_x0 ax0=ax1-14
  end
- return ax0,py+cb_y0,ax1,py+cb_y1
-end
-
-function check_atk_tiles()
- local ax0,ay0,ax1,ay1=atk_box()
+ local ay0,ay1=py+cb_y0,py+cb_y1
  local tx0=flr(ax0/16)
  local ty0=flr(ay0/16)
  local tx1=thi(ax1)
@@ -718,7 +698,32 @@ function check_atk_tiles()
   for tx=tx0,tx1 do
    if tile_flag(tx,ty)&4>0 then
     mdat[2][ty*lvl_w+tx+1]=0
-    spawn_parts(tx*16+8,ty*16+8)
+    for i=1,3 do add(parts,{x=tx*16+8,y=ty*16+8,vx=rnd(3)-1.5,vy=-rnd(2)-1,age=0}) end
+   end
+  end
+ end
+ for e in all(ents) do
+  if e.type==2 then
+   local sx=e.tx*16
+   local sy=e.ty*16
+   if ax1>sx and ax0<sx+16
+    and ay1>sy and ay0<sy+16 then
+    toggle_switch(e)
+   end
+  elseif e.type==3 and e.hp>0
+   and e.state~="death" and e.inv_t==0 then
+   if ax1>e.x and ax0<e.x+16
+    and ay1>e.y and ay0<e.y+16 then
+    ent_hurt(e,a_spd,a_sph)
+   end
+  elseif e.type<=5 and e.type>=4 and e.hp>0
+   and e.state~="death" and e.state~="sleep"
+   and (e.type~=4 or e.state~="fdash") and e.inv_t==0 then
+   local wb=e.type==4
+   local hw=wb and 14 or 15
+   if ax1>e.x-hw and ax0<e.x+hw
+    and ay1>e.y-(wb and 24 or 28) and ay0<e.y then
+    ent_hurt(e,wb and a_wbdt or a_hbd,wb and a_wbd or a_hbh)
    end
   end
  end
@@ -726,44 +731,12 @@ end
 
 function update_parts()
  for p in all(parts) do
-  if not p.landed then
-   p.vy+=0.15
-   -- move x, check walls
-   p.x+=p.vx
-   local tx=flr(p.x/16)
-   local ty=flr(p.y/16)
-   if tile_solid(tx,ty) then
-    p.x-=p.vx
-    p.vx*=-0.3
-   end
-   -- move y, check floor/ceiling
-   p.y+=p.vy
-   tx=flr(p.x/16)
-   ty=flr(p.y/16)
-   if tile_solid(tx,ty) then
-    if p.vy>0 then
-     -- hit floor: snap to top
-     p.y=ty*16-1
-    else
-     -- hit ceiling: snap to bottom
-     p.y=(ty+1)*16+1
-    end
-    if abs(p.vy)<0.8 then
-     p.landed=true
-     p.vx,p.vy=0,0
-    else
-     p.vy*=-0.4
-     p.vx*=0.7
-    end
-   end
-  end
+  p.x+=p.vx p.y+=p.vy
+  p.vy+=0.15
   p.age+=1
-  -- collect if player overlaps (after 15 frames)
-  local dx=p.x-px
-  local dy=p.y-(py+11)
-  if p.age>15 and abs(dx)<10 and abs(dy)<10 then
-   gems+=1
-   del(parts,p)
+  if p.age>15 and abs(p.x-px)<10 and abs(p.y-py-11)<10 then
+   gems+=1 del(parts,p)
+  elseif p.age>90 then del(parts,p)
   end
  end
 end
@@ -845,35 +818,6 @@ function toggle_switch(e)
     elseif e.state==3 then
      de.state=3 de.frame=14
     end
-   end
-  end
- end
-end
-
-function check_atk_ents()
- local ax0,ay0,ax1,ay1=atk_box()
- for e in all(ents) do
-  if e.type==2 then
-   local sx=e.tx*16
-   local sy=e.ty*16
-   if ax1>sx and ax0<sx+16
-    and ay1>sy and ay0<sy+16 then
-    toggle_switch(e)
-   end
-  elseif e.type==3 and e.hp>0
-   and e.state~="death" and e.inv_t==0 then
-   if ax1>e.x and ax0<e.x+16
-    and ay1>e.y and ay0<e.y+16 then
-    ent_hurt(e,a_spd,a_sph)
-   end
-  elseif e.type<=5 and e.type>=4 and e.hp>0
-   and e.state~="death" and e.state~="sleep"
-   and (e.type~=4 or e.state~="fdash") and e.inv_t==0 then
-   local wb=e.type==4
-   local hw=wb and 14 or 15
-   if ax1>e.x-hw and ax0<e.x+hw
-    and ay1>e.y-(wb and 24 or 28) and ay0<e.y then
-    ent_hurt(e,wb and a_wbdt or a_hbd,wb and a_wbd or a_hbh)
    end
   end
  end
@@ -1282,19 +1226,15 @@ function text_box(txt,cx,cy,col,sp)
  local bx,by=cx-tw\2-pd,cy-bh\2
  local bw=tw+pd*2
  local s=box_s
- rectfill(bx+3,by+3,bx+bw-4,by+bh-4,0)
+ rectfill(bx+4,by+4,bx+bw-5,by+bh-5,0)
  draw_char(a_box,1,bx,by)
  draw_char(a_box,1,bx+bw-s,by,true)
  draw_char(a_box,1,bx,by+bh-s,true,2)
  draw_char(a_box,1,bx+bw-s,by+bh-s,false,2)
- for v in all(split"0,2,5") do
-  line(bx+v,by+s,bx+v,by+bh-s-1,7)
-  line(bx+bw-1-v,by+s,bx+bw-1-v,by+bh-s-1,7)
- end
- for h in all(split"2,4") do
-  line(bx+s,by+h,bx+bw-s-1,by+h,7)
-  line(bx+s,by+bh-1-h,bx+bw-s-1,by+bh-1-h,7)
- end
+ line(bx+s,by+3,bx+bw-s-1,by+3,7)
+ line(bx+s,by+bh-4,bx+bw-s-1,by+bh-4,7)
+ line(bx+3,by+s,bx+3,by+bh-s-1,7)
+ line(bx+bw-4,by+s,bx+bw-4,by+bh-s-1,7)
  p8print(txt,cx-tw\2,by+pd,col,sp)
 end
 
@@ -1320,19 +1260,6 @@ function draw_ents()
    local flip=e.mdir==-1
    local rot=sp_rot[e.surf+1]
    draw_char(e.anim,e.frame,sx,sy,flip,rot)
-   -- antenna blink during idle
-   if e.anim==a_spi and (e.anim_t\4)%2==0 then
-    local bx=flip and 7 or 8
-    local bpx,bpy=bx,12
-    if rot==1 then
-     bpx,bpy=spider_cw-1-bpy,bx
-    elseif rot==2 then
-     bpx,bpy=spider_cw-1-bx,spider_cw-1-bpy
-    elseif rot==3 then
-     bpx,bpy=bpy,spider_cw-1-bx
-    end
-    pset(sx+bpx,sy+bpy,8)
-   end
   elseif e.type==6 then
    draw_char(e.anim,e.frame,e.x-portal_cw\2-cam_x,e.y-portal_ch-cam_y,nil,nil,e.active and ptl_rm)
   else
@@ -1562,8 +1489,7 @@ function _update60()
 
  -- attack hitbox vs destructibles + entities
  if state=="attack" or state=="sweep" then
-  check_atk_tiles()
-  check_atk_ents()
+  check_attacks()
  end
 
  -- update entities & particles
@@ -1588,18 +1514,14 @@ function twidth(str,sp)
  return w
 end
 
-function draw_title()
- cls(0)
- draw_char(a_title,1,0,0)
- text_box("Ashen Edge",64,20,8)
- if (time()*2)%2<1 then
-  text_box("Press X",64,112,6)
- end
-end
-
 function _draw()
  if gs==0 then
-  draw_title()
+  cls(0)
+  draw_char(a_title,1,0,0)
+  text_box("Ashen Edge",64,20,8)
+  if (time()*2)%2<1 then
+   text_box("Press X",64,112,6)
+  end
   apply_fade(fade_v)
   return
  end
