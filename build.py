@@ -776,11 +776,16 @@ def _eg2_encode_frame(pixels, bpp, w, h):
                 mode & 1, (mode >> 1) & 1, (mode >> 2) & 1,
                 (order - 1) & 1, ((order - 1) >> 1) & 1
             ]
+            MAX_EG_RUN = 16383  # PICO-8 16.16 fixed-point safe limit
             i = 0; nb = len(bitstream)
             while i < nb:
                 zero_run = 0
                 while i < nb and bitstream[i] == 0:
                     zero_run += 1; i += 1
+                # Split long runs to avoid PICO-8 integer overflow
+                while zero_run > MAX_EG_RUN:
+                    out_bits.extend(_eg_encode_bits(MAX_EG_RUN, order))
+                    zero_run -= MAX_EG_RUN
                 out_bits.extend(_eg_encode_bits(zero_run, order))
                 if i < nb:
                     i += 1  # consume the 1-bit (implicit)
@@ -1464,26 +1469,22 @@ def encode_packbits(cell_grid, map_w, map_h):
 
 
 def encode_layer(cell_grid, map_w, map_h, label=""):
-    """Try all encoding modes, return (mode, data_bytes, description)."""
-    # Mode 1: Tiled fill
-    tiling = detect_tiling(cell_grid, map_w, map_h)
-    if tiling:
-        cost, tw, th, dx, dy, rw, rh, cells = tiling
-        data = bytearray([tw, th, dx, dy, rw, rh])
-        data.extend(cells)
-        best_mode, best_data = 1, data
-        desc = f"TiledFill {tw}x{th} at ({dx},{dy}) {rw}x{rh} = {len(data)}b"
-    else:
-        best_mode, best_data = None, None
-        desc = ""
-
-    # Mode 2: PackBits
-    packbits = encode_packbits(cell_grid, map_w, map_h)
-    if best_data is None or len(packbits) < len(best_data):
-        best_mode, best_data = 2, packbits
-        desc = f"PackBits {len(packbits)}b"
-
-    return best_mode, best_data, desc
+    """Encode layer as EG2 bitstream. Returns (data_bytes, description)."""
+    flat = []
+    for y in range(map_h):
+        for x in range(map_w):
+            flat.append(cell_grid[y][x])
+    max_val = max(flat) if flat else 0
+    bpp = 1
+    for try_bpp in range(1, 9):
+        if (1 << try_bpp) > max_val:
+            bpp = try_bpp
+            break
+    eg2_data, eg2_mode, eg2_order = _eg2_encode_frame(flat, bpp, map_w, map_h)
+    out = bytearray([bpp])
+    out.extend(eg2_data)
+    desc = f"EG2 {len(out)}b {bpp}bpp (mode={eg2_mode} order={eg2_order})"
+    return out, desc
 
 
 def build_level_data(tileset, bg_tileset, map_data):
@@ -1659,7 +1660,6 @@ def build_level_data(tileset, bg_tileset, map_data):
           f" pal={tile_pal}")
 
     # Step 4: Build cell grids, then auto-encode each layer
-    layer_modes = []
     layer_data = []
     for L in range(num_layers):
         mg = map_grids[L]
@@ -1671,13 +1671,12 @@ def build_level_data(tileset, bg_tileset, map_data):
                 row.append(editor_to_cell(L, mg[y][x], xg[y][x]))
             cell_grid.append(row)
         label = ['BG', 'Main'][L]
-        mode, data, desc = encode_layer(cell_grid, map_w, map_h, label)
-        layer_modes.append(mode)
+        data, desc = encode_layer(cell_grid, map_w, map_h, label)
         layer_data.append(data)
-        print(f"  Layer {L} ({label}): mode {mode} {desc}")
+        print(f"  Layer {L} ({label}): {desc}")
 
     # Step 5: Pack into __map__ format
-    # Header (12 + num_layers bytes):
+    # Header (12 + 2*nl bytes):
     #   num_tiles:      u8
     #   num_layers:     u8
     #   map_w:          u16 LE
@@ -1685,9 +1684,10 @@ def build_level_data(tileset, bg_tileset, map_data):
     #   spawn_x:        u16 LE (0xFFFF = none)
     #   spawn_y:        u16 LE (0xFFFF = none)
     #   tile_blob_size: u16 LE
-    #   layer_mode[0..nl-1]: u8 each  (NEW)
-    # Then: tile_blob (extended RLE compressed pixel data, single blob)
-    # Then: layer 0 data, layer 1 data
+    #   layer_size[0..nl-1]: u16 LE each
+    # Then: tile_blob
+    # Then: layer 0 EG2 data, layer 1 EG2 data (each: bpp byte + EG2 bitstream)
+    # Then: entity data
     header = bytearray()
     header.append(num_rt)
     header.append(num_layers)
@@ -1703,8 +1703,9 @@ def build_level_data(tileset, bg_tileset, map_data):
     header.append((sy >> 8) & 0xFF)
     header.append(len(tile_blob) & 0xFF)
     header.append((len(tile_blob) >> 8) & 0xFF)
-    for m in layer_modes:
-        header.append(m)
+    for ld in layer_data:
+        header.append(len(ld) & 0xFF)
+        header.append((len(ld) >> 8) & 0xFF)
 
     map_section = bytearray()
     map_section.extend(header)

@@ -108,9 +108,13 @@ function decode_eg2(off,npix,bpp,w)
  local pb,pv,pi=0,0,1
  while pi<=npix do
   local z=eg()
-  for i=1,z do
-   pv=pv*2 pb+=1
-   if pb==bpp then buf[pi],pv,pb=pv,0,0 pi+=1 end
+  while true do
+   for i=1,z do
+    pv=pv*2 pb+=1
+    if pb==bpp then buf[pi],pv,pb=pv,0,0 pi+=1 end
+   end
+   if z<16383 then break end
+   z=eg()
   end
   if pi<=npix then
    pv=pv*2+1 pb+=1
@@ -341,7 +345,7 @@ function load_tiles()
   return
  end
  local nt,nl=peek(map_base,2)
- local p=map_base+12+nl
+ local p=map_base+12+nl*2
  local tbpp=peek(p)
  local tnp=1<<tbpp
  local tpal={}
@@ -352,33 +356,10 @@ function load_tiles()
  local all_idx=decode_eg2(p+1+tnp\2,nt*256,tbpp,16)
  p+=pk2(map_base+10)
  for L=1,nl do
-  mdat[L]={}
-  for i=1,sz do mdat[L][i]=0 end
-  local m=peek(map_base+11+L)
-  if m==1 then
-   local tw,th,dx,dy,rw,rh=peek(p,6)
-   for ry=0,rh-1 do
-    for rx=0,rw-1 do
-     mdat[L][(dy+ry)*lvl_w+dx+rx+1]=peek(p+6+(ry%th)*tw+(rx%tw))
-    end
-   end
-   p+=6+tw*th
-  elseif m==2 then
-   local idx=1
-   while idx<=sz do
-    local ctrl=peek(p) p+=1
-    if ctrl<128 then
-     for i=1,ctrl+1 do
-      mdat[L][idx]=peek(p) p+=1 idx+=1
-     end
-    else
-     local val=peek(p) p+=1
-     for i=1,ctrl-125 do
-      mdat[L][idx]=val idx+=1
-     end
-    end
-   end
-  end
+  local lsz=pk2(map_base+10+L*2)
+  local lbpp=peek(p)
+  mdat[L]=decode_eg2(p+1,sz,lbpp,lvl_w)
+  p+=lsz
  end
  local ne=peek(p) p+=1
  for i=1,ne do
