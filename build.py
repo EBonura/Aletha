@@ -86,6 +86,9 @@ PORTAL_SRC_W, PORTAL_SRC_H = 28, 41
 PORTAL_CROP_Y = 30  # top rows to skip (all transparent)
 PORTAL_W, PORTAL_H = 28, PORTAL_SRC_H - 30  # 28x11
 
+TORCH_SRC = os.path.join(DIR, "assets", "torch", "Torch 16x16.png")
+TORCH_W, TORCH_H = 16, 16
+
 FONT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()"
 TILE_SIZE = 16
 TILESET_COLS = 18
@@ -2086,6 +2089,37 @@ def build_cart():
     portal_chunk.extend(ptl_block)
     print(f"  portal_chunk: {len(portal_chunk)}b")
 
+    # ── Torch (animated object, 16x16, vertical strip) ──
+    print("\nExtracting torch frames...")
+    torch_img = Image.open(TORCH_SRC).convert("RGBA")
+    torch_nf = torch_img.height // TORCH_H
+    torch_frames = []
+    for f in range(torch_nf):
+        pixels = []
+        for y in range(TORCH_H):
+            for x in range(TORCH_W):
+                r, g, b, a = torch_img.getpixel((x, f * TORCH_H + y))
+                if a == 0:
+                    pixels.append(TRANS)
+                else:
+                    c = nearest_p8(r, g, b)
+                    # Remap grays to red tones (skip last frame = unlit)
+                    if f < torch_nf - 1:
+                        c = {1:2, 5:2, 6:8, 7:8, 13:8}.get(c, c)
+                    pixels.append(c)
+        torch_frames.append(pixels)
+    torch_block, torch_info = encode_animation("torch", torch_frames, TORCH_W, TORCH_H, bpp=2)
+    total_frames += torch_nf
+    print(torch_info)
+    torch_chunk = bytearray()
+    torch_chunk.append(1)  # 1 anim
+    torch_chunk.append(TORCH_W)
+    torch_chunk.append(TORCH_H)
+    torch_chunk.append(0)
+    torch_chunk.append(0)
+    torch_chunk.extend(torch_block)
+    print(f"  torch_chunk: {len(torch_chunk)}b")
+
     # ── Box corner (for text_box UI) ──
     print("\nExtracting box corner...")
     box_img = Image.open(BOX_SRC).convert("RGBA")
@@ -2114,7 +2148,7 @@ def build_cart():
 
     # ── HP bar UI ──
     print("\nEncoding HP bar...")
-    hp_img = Image.open(os.path.join(DIR, "hp_bar_preview.png")).convert('RGBA')
+    hp_img = Image.open(os.path.join(DIR, "assets", "hp_bar.png")).convert('RGBA')
     hp_w, hp_h = hp_img.size
     hp_pixels = []
     for y in range(hp_h):
@@ -2195,6 +2229,7 @@ def build_cart():
         ("hellbot",  hellbot_chunk),
         ("boss",     boss_chunk),
         ("portal",   portal_chunk),
+        ("torch",    torch_chunk),
         ("box",      box_chunk),
         ("hp",       hp_chunk),
         ("level",    map_level_data),
@@ -2244,6 +2279,7 @@ def build_cart():
     hellbot_base_addr = placements["hellbot"]
     boss_base_addr    = placements["boss"]
     portal_base_addr  = placements["portal"]
+    torch_base_addr   = placements["torch"]
     box_base_addr     = placements["box"]
     hp_base_addr      = placements["hp"]
     map_base_addr     = placements["level"]
@@ -2277,12 +2313,14 @@ def build_cart():
     music_buf = bytearray(256)
     music_sfx, music_pat = load_music_cart(MUSIC_P8)
     audio_slots = 0
+    sfx_shift = 0
     # Data flows into sfx from the start; audio sfx go into higher slots
     sfx_data_slots = (sfx_used + 67) // 68 if sfx_used > 0 else 0
 
     if music_sfx is not None:
         # Remap: shift audio SFX up by sfx_data_slots to avoid data region
         shift = sfx_data_slots
+        sfx_shift = shift
         for src_slot in range(64):
             slot_data = music_sfx[src_slot * 68:(src_slot + 1) * 68]
             if any(b != 0 for b in slot_data):
@@ -2417,8 +2455,12 @@ def build_cart():
     ptl_base_idx = bk_base_idx + len(BOSS_ANIMS)
     gen_lines.append(f"a_ptl={ptl_base_idx}")
     gen_lines.append(f"portal_base={portal_base_addr} portal_cw={PORTAL_W} portal_ch={PORTAL_H}")
+    # torch
+    torch_base_idx = ptl_base_idx + 1
+    gen_lines.append(f"a_torch={torch_base_idx}")
+    gen_lines.append(f"torch_base={torch_base_addr} torch_cw={TORCH_W} torch_ch={TORCH_H}")
     # box corner UI
-    box_base_idx = ptl_base_idx + 1
+    box_base_idx = torch_base_idx + 1
     gen_lines.append(f"a_box={box_base_idx}")
     gen_lines.append(f"box_base={box_base_addr} box_s={BOX_S}")
     # unified aspd table — indexed by anim constant directly
@@ -2429,11 +2471,12 @@ def build_cart():
     hb_speeds  = [8,5,5,5,5,6]  # hellbot: idle,run,attack,shoot,hit,death
     aspd = plr_speeds + ent_speeds + [30, 0]  # title=30, font=0
     bk_speeds  = [8,5,5,5,5,6]  # boss: idle,run,attack,charge,hit,death
-    aspd += sp_speeds + wb_speeds + hb_speeds + bk_speeds + [6, 0]  # portal=6, box=0
+    aspd += sp_speeds + wb_speeds + hb_speeds + bk_speeds + [6, 6, 0]  # portal=6, torch=6, box=0
     aspd_str = ",".join(str(v) for v in aspd)
     gen_lines.append(f'aspd=split"{aspd_str}"')
     # hp bar
     gen_lines.append(f"hp_base={hp_base_addr} hp_w={hp_w} hp_h={hp_h}")
+    gen_lines.append(f"sfx_confirm={6+sfx_shift}")
     # font lookup table: char code -> frame index (1-based)
     # font_map: build from character string (saves ~270 tokens vs explicit table)
     # Escape ' inside the Lua string since we use single quotes
@@ -2460,6 +2503,20 @@ def build_cart():
 
     # No peek wrapper needed: each chunk is fully within one contiguous region,
     # and base addresses are physical — peek() reads the right bytes directly.
+
+    # Extract zone texts from level JSON
+    zone_texts = []
+    if os.path.exists(LEVEL_JSON):
+        with open(LEVEL_JSON) as f:
+            ld = json.load(f)
+        zone_texts = ld.get("texts", [])
+    if zone_texts:
+        escaped = [t.replace("\\", "\\\\").replace('"', '\\"') for t in zone_texts]
+        txt_entries = ",".join(f'"{t}"' for t in escaped)
+        gen_lines.append(f"_zt={{{txt_entries}}}")
+        print(f"\n  Zone texts: {len(zone_texts)} entries")
+    else:
+        gen_lines.append("_zt={}")
 
     # Combine all generated blocks
     generated_block = "\n".join(gen_lines)

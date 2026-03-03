@@ -86,11 +86,17 @@ body { background: #1d2b53; color: #fff; font-family: monospace; display: flex; 
       <button class="ent-type-btn" data-etype="4" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">WheelBot</button>
       <button class="ent-type-btn" data-etype="5" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">HellBot</button>
       <button class="ent-type-btn" data-etype="6" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Portal</button>
+      <button class="ent-type-btn" data-etype="7" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Torch</button>
+      <button class="ent-type-btn" data-etype="8" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">TextZone</button>
     </div>
     <div id="entity-props" style="display:none;">
       <label style="font-size:11px">Group: <input type="number" id="entity-group" min="1" max="255" value="1"
         style="width:50px;background:#333;color:#fff;border:1px solid #555;padding:2px;font-family:monospace;"></label>
       <button id="entity-delete" style="margin-left:8px;background:#a00;color:#fff;border:none;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Delete</button>
+    </div>
+    <div id="entity-text-edit" style="display:none;margin-top:4px;">
+      <label style="font-size:11px">Text:</label>
+      <textarea id="entity-text" rows="3" style="width:100%;background:#333;color:#fff;border:1px solid #555;padding:4px;font-family:monospace;font-size:11px;resize:vertical;" placeholder="Zone text (use \n for newlines)"></textarea>
     </div>
     <div id="entity-info" style="font-size:10px;color:#888;margin-top:4px;">Click to place entity</div>
   </div>
@@ -218,7 +224,9 @@ const ENT_TYPES = [
   { id: 3, name: "Spider", w: 1, h: 1, color: "#ff004d", hasGroup: false },
   { id: 4, name: "WheelBot", w: 2, h: 2, color: "#29adff", hasGroup: false },
   { id: 5, name: "HellBot", w: 2, h: 2, color: "#ff004d", hasGroup: false },
-  { id: 6, name: "Portal", w: 2, h: 1, color: "#29adff", hasGroup: false }
+  { id: 6, name: "Portal", w: 2, h: 1, color: "#29adff", hasGroup: false },
+  { id: 7, name: "Torch",  w: 1, h: 1, color: "#ffa300", hasGroup: false },
+  { id: 8, name: "TextZone", w: 1, h: 1, color: "#ffccff", hasGroup: true }
 ];
 let entities = [];
 let selectedEntity = null;
@@ -706,7 +714,13 @@ function render() {
         ctx.font = Math.max(8, ts * 0.35) + "px monospace";
         ctx.textAlign = "center"; ctx.textBaseline = "top";
         ctx.fillText(et.name, ex + ew/2, ey + 2);
-        if (et.hasGroup) {
+        if (ent.type === 8 && ent.text) {
+          ctx.fillStyle = "#fff";
+          ctx.font = Math.max(7, ts * 0.3) + "px monospace";
+          ctx.textBaseline = "middle";
+          const preview = ent.text.length > 12 ? ent.text.substring(0, 12) + "..." : ent.text;
+          ctx.fillText(preview, ex + ew/2, ey + eh/2);
+        } else if (et.hasGroup) {
           ctx.fillStyle = "#fff";
           ctx.font = Math.max(10, ts * 0.5) + "px monospace";
           ctx.textBaseline = "middle";
@@ -975,15 +989,21 @@ wrap.addEventListener("mousedown", e => {
       document.getElementById("entity-group").value = ent.group;
       document.getElementById("entity-group").closest("label").style.display = ett.hasGroup ? "" : "none";
       document.getElementById("entity-props").style.display = "";
+      document.getElementById("entity-text-edit").style.display = ent.type === 8 ? "" : "none";
+      if (ent.type === 8) document.getElementById("entity-text").value = ent.text || "";
       document.getElementById("entity-info").textContent = ett.hasGroup ? `${ett.name} at ${ent.x},${ent.y} group ${ent.group}` : `${ett.name} at ${ent.x},${ent.y}`;
     } else if (inBounds(tx, ty)) {
       pushUndo();
       const grp = et.hasGroup ? 1 : 0;
-      entities.push({ type: entityPlaceType, x: tx, y: ty, group: grp });
+      const newEnt = { type: entityPlaceType, x: tx, y: ty, group: grp };
+      if (entityPlaceType === 8) newEnt.text = "";
+      entities.push(newEnt);
       selectedEntity = entities.length - 1;
       document.getElementById("entity-group").value = grp;
       document.getElementById("entity-group").closest("label").style.display = et.hasGroup ? "" : "none";
       document.getElementById("entity-props").style.display = "";
+      document.getElementById("entity-text-edit").style.display = entityPlaceType === 8 ? "" : "none";
+      if (entityPlaceType === 8) document.getElementById("entity-text").value = "";
       document.getElementById("entity-info").textContent = et.hasGroup ? `${et.name} at ${tx},${ty} group 1` : `${et.name} at ${tx},${ty}`;
     }
     render(); return;
@@ -1150,12 +1170,19 @@ document.getElementById("entity-group").addEventListener("change", () => {
     render();
   }
 });
+document.getElementById("entity-text").addEventListener("input", () => {
+  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 8) {
+    entities[selectedEntity].text = document.getElementById("entity-text").value;
+    render();
+  }
+});
 document.getElementById("entity-delete").addEventListener("click", () => {
   if (selectedEntity !== null) {
     pushUndo();
     entities.splice(selectedEntity, 1);
     selectedEntity = null;
     document.getElementById("entity-props").style.display = "none";
+    document.getElementById("entity-text-edit").style.display = "none";
     document.getElementById("entity-info").textContent = "Click to place entity";
     render();
   }
@@ -1254,6 +1281,16 @@ document.getElementById("export-close").addEventListener("click",()=>document.ge
 // ── Level I/O (via local server, JSON) ──
 
 function getLevelData() {
+  // Build texts array from type 8 entities and auto-assign their group as 1-based index
+  const texts = [];
+  const entsCopy = entities.map(e => {
+    const out = {type: e.type, x: e.x, y: e.y, group: e.group};
+    if (e.type === 8) {
+      texts.push(e.text || "");
+      out.group = texts.length; // 1-based index into _zt
+    }
+    return out;
+  });
   return {
     version: 3,
     width: mapW,
@@ -1269,7 +1306,8 @@ function getLevelData() {
     spawnY: spawnY,
     bandColors: Array.from(bandColors),
     parallax: Array.from(layerParallax),
-    entities: entities.map(e => ({type: e.type, x: e.x, y: e.y, group: e.group}))
+    entities: entsCopy,
+    texts: texts
   };
 }
 
@@ -1307,7 +1345,12 @@ function applyLevelData(d) {
   if (d.spawnX != null) { spawnX = d.spawnX; spawnY = d.spawnY; }
   if (d.bandColors) { for (let i=0; i<Math.min(d.bandColors.length, bandColors.length); i++) bandColors[i] = d.bandColors[i]; remapAllTiles(); refreshPaletteTiles(); buildBandEditor(); }
   if (d.parallax) { for (let i=0; i<2; i++) layerParallax[i] = d.parallax[i] ?? layerParallax[i]; }
-  entities = (d.entities || []).map(e => ({type: e.type, x: e.x, y: e.y, group: e.group}));
+  const loadedTexts = d.texts || [];
+  entities = (d.entities || []).map(e => {
+    const ent = {type: e.type, x: e.x, y: e.y, group: e.group};
+    if (e.type === 8) ent.text = loadedTexts[e.group - 1] || "";
+    return ent;
+  });
   selectedEntity = null;
   document.querySelectorAll(".parallax-input").forEach(inp => { inp.value = layerParallax[parseInt(inp.dataset.layer)]; });
   document.getElementById("map-w").value = mapW;

@@ -12,7 +12,7 @@
 combo_chain={a_atk1,a_xslice}
 
 -- game state: 0=title, 1=play
-gs=0 tt=0
+gs=0 tt=0 zt=nil
 
 -- fade: v=0 clear, v=8 black, d=direction (1=out,-1=in,0=idle)
 fade_v=8 fade_d=-1 fade_t=0
@@ -179,7 +179,7 @@ sp_anc={}
 
 function decode_anim(ai)
  local frames={}
- local hp=ai.bpp<4 and #ai.pal>0
+ local hp=ai.bpp<4
  if ai.atype==5 then
   for f=1,ai.nf do
    local foff=pk2(ai.fo_off+(f-1)*2)
@@ -193,8 +193,6 @@ function decode_anim(ai)
   end
  else
   local npix=ai.bw*ai.bh
-  local zeros={}
-  for i=1,npix do zeros[i]=0 end
   for f=1,ai.nf do
    local ref=peek(ai.ref_off+f-1)
    local foff=pk2(ai.fo_off+(f-1)*2)
@@ -208,8 +206,10 @@ function decode_anim(ai)
     end
    else
     local d=decode_eg2(fa,npix,ai.bpp,ai.bw)
-    local base=ref==255 and zeros or frames[ref+1][1]
-    for i=1,npix do d[i]=d[i]^^base[i] end
+    if ref~=255 then
+     local base=frames[ref+1][1]
+     for i=1,npix do d[i]=d[i]^^base[i] end
+    end
     frames[f]={d,ai.bx,ai.by,ai.bw,ai.bh}
    end
   end
@@ -239,6 +239,7 @@ function cache_anims()
  la(wheelbot_base,a_wbi,wheelbot_cw,wheelbot_ch)
  la(hellbot_base,a_hbi,hellbot_cw,hellbot_ch)
  la(portal_base,a_ptl,portal_cw,portal_ch)
+ la(torch_base,a_torch,torch_cw,torch_ch)
  la(box_base,a_box,box_s,box_s)
  local ai=read_anim(1,hp_base)
  hp_buf=decode_anim(ai)[1][1]
@@ -265,10 +266,12 @@ function draw_hp()
   for x=0,hp_w-1 do
    local c=ord(hp_buf,idx)
    if c==0 then
-    pset(2+x,2+y,0)
+    pset(x,y,0)
    elseif c==7 then
     if hp_w-1-x>=fill+wave then
-     pset(2+x,2+y,8)
+     pset(x,y,8)
+    else
+     pset(x,y,7)
     end
    end
    idx+=1
@@ -276,13 +279,8 @@ function draw_hp()
  end
 end
 
-function get_frame(a,f)
- local fr=acache[a].frames[f]
- return fr[1],fr[2],fr[3],fr[4],fr[5]
-end
-
 function draw_char(a,f,sx,sy,flip,rot,rm)
- local buf,bx,by,bw,bh=get_frame(a,f)
+ local buf,bx,by,bw,bh=unpack(acache[a].frames[f])
  if bw==0 then return end
  local cw=acache[a].cw
  local idx=1
@@ -430,7 +428,7 @@ function load_tiles()
  all_idx=nil
 end
 
-function thi(v) return flr((v-0.01)/16) end
+function thi(v) return (v-1)\16 end
 
 function tile_flag(tx,ty)
  if tx<0 or tx>=lvl_w or ty<0 or ty>=lvl_h then return 0 end
@@ -440,10 +438,7 @@ function tile_flag(tx,ty)
 end
 
 function tile_solid(tx,ty)
- if tile_flag(tx,ty)&1>0 then
-  return true
- end
- return ent_solid(tx,ty)
+ return tile_flag(tx,ty)&1>0 or ent_solid(tx,ty)
 end
 
 function box_hits_solid(bx0,by0,bx1,by1)
@@ -458,7 +453,6 @@ function box_hits_solid(bx0,by0,bx1,by1)
    end
   end
  end
- return false
 end
 
 function land_on(y_top)
@@ -504,44 +498,35 @@ function resolve_y()
  grounded=false
 end
 
+function tr(cx,cy)
+ local x=max(0,cx\16)
+ local y=max(0,cy\16)
+ return x,y,min(lvl_w-1,x+8),min(lvl_h-1,y+8)
+end
+
 function draw_bg_layer()
- -- bg tiles stored at 0x8000 in user mem
- -- 128 bytes each (16 rows x 8 bytes)
- -- blit to screen via memcpy (no spr())
  local md=mdat[1]
  if not md then return end
  local plx=lplx[1]
  local cx=flr(cam_x*plx)\2*2
  local cy=flr(cam_y*plx)
- local ts=16
- local tx0=max(0,flr(cx/ts))
- local ty0=max(0,flr(cy/ts))
- local tx1=min(lvl_w-1,tx0+8)
- local ty1=min(lvl_h-1,ty0+8)
- local nst=lvl_nst
+ local tx0,ty0,tx1,ty1=tr(cx,cy)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
    local c=md[ty*lvl_w+tx+1]
    if c>0 then
-    local sx=tx*ts-cx
-    local sy=ty*ts-cy
-    if c<=nst then
-     local sc=(c-1)%8
-     local sr=(c-1)\8
-     spr(sr*32+sc*2,sx,sy,2,2)
-    else
-     local src=0x8000+(c-nst-1)*128
-     -- clip x: tile is 8 bytes (16px)
-     local x0=max(0,-sx\2)   -- skip bytes on left
-     local x1=min(7,(127-sx)\2) -- last byte on right
-     if x1>=x0 then
-      local w=x1-x0+1
-      for py=0,15 do
-       local dy=sy+py
-       if dy>=0 and dy<128 then
-        memcpy(0x6000+dy*64+sx\2+x0,
-         src+py*8+x0,w)
-       end
+    local sx=tx*16-cx
+    local sy=ty*16-cy
+    local src=0x8000+(c-lvl_nst-1)*128
+    local x0=max(0,-sx\2)
+    local x1=min(7,(127-sx)\2)
+    if x1>=x0 then
+     local w=x1-x0+1
+     for py=0,15 do
+      local dy=sy+py
+      if dy>=0 and dy<128 then
+       memcpy(0x6000+dy*64+sx\2+x0,
+        src+py*8+x0,w)
       end
      end
     end
@@ -556,11 +541,7 @@ function draw_main_layer()
  local plx=lplx[2]
  local cx=cam_x*plx
  local cy=cam_y*plx
- local ts=16
- local tx0=max(0,flr(cx/ts))
- local ty0=max(0,flr(cy/ts))
- local tx1=min(lvl_w-1,tx0+8)
- local ty1=min(lvl_h-1,ty0+8)
+ local tx0,ty0,tx1,ty1=tr(cx,cy)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
    local c=md[ty*lvl_w+tx+1]
@@ -570,7 +551,7 @@ function draw_main_layer()
     local fy=c&1>0
     local sc=(t-1)%8
     local sr=(t-1)\8
-    spr(sr*32+sc*2,tx*ts-cx,ty*ts-cy,
+    spr(sr*32+sc*2,tx*16-cx,ty*16-cy,
      2,2,fx,fy)
    end
   end
@@ -718,6 +699,7 @@ function check_attacks()
   ax1=px+cb_x0 ax0=ax1-14
  end
  local ay0,ay1=py+cb_y0,py+cb_y1
+ local function h(x,y,m) return ax1>x-m and ax0<x+m+16 and ay1>y-m and ay0<y+m+16 end
  local tx0=flr(ax0/16)
  local ty0=flr(ay0/16)
  local tx1=thi(ax1)
@@ -732,16 +714,14 @@ function check_attacks()
  end
  for e in all(ents) do
   if e.type==2 then
-   local sx=e.tx*16
-   local sy=e.ty*16
-   if ax1>sx and ax0<sx+16
-    and ay1>sy and ay0<sy+16 then
+   if h(e.tx*16,e.ty*16,0) then
     toggle_switch(e)
    end
+  elseif e.type==7 then
+   if h(e.x,e.y,8) then e.lit=false e.frame=7 end
   elseif e.type==3 and e.hp>0
    and e.state~="death" and e.inv_t==0 then
-   if ax1>e.x and ax0<e.x+16
-    and ay1>e.y and ay0<e.y+16 then
+   if h(e.x,e.y,0) then
     ent_hurt(e,a_spd,a_sph)
    end
   elseif e.type<=5 and e.type>=4 and e.hp>0
@@ -803,10 +783,16 @@ function init_ents()
    e.patrol_t=60 e.walk_count=0
   elseif e.type==4 then init_bot(e,a_wbi,4)
   elseif e.type==5 then init_bot(e,a_hbi,5)
-  elseif e.type==6 then
-   e.x=e.tx*16+8 e.y=(e.ty+2)*16
-   e.anim=a_ptl e.frame=1
-   e.anim_t=0 e.active=false
+  elseif e.type>=6 then
+   e.x=e.tx*16 e.y=e.ty*16
+   if e.type==6 then
+    e.x+=8 e.y+=16
+    e.anim=a_ptl e.frame=1
+    e.anim_t=0 e.active=false
+   elseif e.type==7 then
+    e.anim=a_torch e.frame=1
+    e.anim_t=0 e.lit=true
+   end
   end
  end
 end
@@ -822,7 +808,6 @@ function ent_solid(tx,ty)
    end
   end
  end
- return false
 end
 
 function toggle_switch(e)
@@ -1185,6 +1170,7 @@ function update_sprojs()
 end
 
 function update_ents()
+ zt=nil
  for e in all(ents) do
   if e.type==2 then
    if e.cooldown>0 then e.cooldown-=1 end
@@ -1209,27 +1195,27 @@ function update_ents()
    end
   elseif e.type==3 then
    update_spider(e)
-  elseif e.type==6 then
+  elseif e.type==6 or(e.type==7 and e.lit)then
    local t,nf=ent_tick(e,6)
-   if t then e.frame=e.frame%nf+1 end
-   if not e.active and abs(px-e.x)<12 and abs(py+8-e.y)<16 then
+   if t then e.frame=e.frame%(e.type==7 and 6 or nf)+1 end
+   if e.type==6 and not e.active and abs(px-e.x)<12 and abs(py+8-e.y)<16 then
     e.active=true
     ckpt_x=e.x ckpt_y=e.y
    end
-  elseif e.type>=4 then
+  elseif e.type==8 and e.tx==px\16 and e.ty==py\16 then
+   zt=e.group
+  elseif e.type<=5 then
    update_bot(e)
   end
  end
 end
 
-function p8print(str,x,y,col,sp)
- col=col or 7
- sp=sp or 1
+function p8print(s,x,y,col)
  local cx=x
- for i=1,#str do
-  local f=font_map[ord(sub(str,i,i))]
-  if f then
-   local buf,bx,by,bw,bh=get_frame(a_font,f)
+ for i=1,#s do
+  local f=font_map[ord(sub(s,i,i))]
+  if f and col then
+   local buf,bx,by,bw,bh=unpack(acache[a_font].frames[f])
    if bw>0 then
     local idx=1
     for dy=0,bh-1 do
@@ -1242,17 +1228,23 @@ function p8print(str,x,y,col,sp)
     end
    end
   end
-  cx+=(f and font_adv[f] or font_cw)+sp
+  cx+=(f and font_adv[f] or font_cw)
  end
+ return cx-x
 end
 
-function text_box(txt,cx,cy,col,sp)
- sp=sp or 0
- local tw=twidth(txt,sp)
+function text_box(txt,cx,cy,col)
+ local lines=split(txt,"\n",false)
+ local nl,mw=#lines,0
+ local lw={}
+ for i,l in ipairs(lines) do
+  lw[i]=p8print(l,0,0)
+  if lw[i]>mw then mw=lw[i] end
+ end
  local px,py=8,5
- local bh=font_ch+py*2
- local bx,by=cx-tw\2-px,cy-bh\2
- local bw=tw+px*2
+ local bh=font_ch*nl+py*2
+ local bx,by=cx-mw\2-px,cy-bh\2
+ local bw=mw+px*2
  local s=box_s
  rectfill(bx+4,by+4,bx+bw-5,by+bh-5,0)
  draw_char(a_box,1,bx,by)
@@ -1263,7 +1255,11 @@ function text_box(txt,cx,cy,col,sp)
  line(bx+s,by+bh-4,bx+bw-s-1,by+bh-4,7)
  line(bx+3,by+s,bx+3,by+bh-s-1,7)
  line(bx+bw-4,by+s,bx+bw-4,by+bh-s-1,7)
- p8print(txt,cx-tw\2,by+py,col,sp)
+ local ty=by+py
+ for i,l in ipairs(lines) do
+  p8print(l,cx-lw[i]\2,ty,col)
+  ty+=font_ch
+ end
 end
 
 function draw_bot(e,at,cw,ch)
@@ -1290,7 +1286,9 @@ function draw_ents()
    draw_char(e.anim,e.frame,sx,sy,flip,rot)
   elseif e.type==6 then
    draw_char(e.anim,e.frame,e.x-portal_cw\2-cam_x,e.y-portal_ch-cam_y,nil,nil,e.active and ptl_rm)
-  else
+  elseif e.type==7 then
+   draw_char(e.anim,e.frame,e.x-cam_x,e.y-cam_y)
+  elseif e.type~=8 then
    local sx=e.tx*16-cam_x
    local sy=e.ty*16-cam_y
    if e.type==1 then sx-=16 end
@@ -1334,7 +1332,7 @@ function _update60()
   end
  end
  if gs~=1 then
-  if fade_d==0 and (btnp(4) or btnp(5)) then fade_d=1 end
+  if fade_d==0 and (btnp(4) or btnp(5)) then sfx(sfx_confirm) fade_d=1 end
   return
  end
  if plr_inv>0 then plr_inv-=1 end
@@ -1532,15 +1530,6 @@ function _update60()
  tick_anim()
 end
 
-function twidth(str,sp)
- sp=sp or 0
- local w=0
- for i=1,#str do
-  local f=font_map[ord(sub(str,i,i))]
-  w+=(f and font_adv[f] or font_cw)+sp
- end
- return w
-end
 
 function _draw()
  if gs==0 then
@@ -1552,48 +1541,35 @@ function _draw()
    local bc=tt%8<4 and 6 or 0
    text_box("press x",96,112,bc)
   end
-  apply_fade(fade_v)
-  return
- end
- if gs==2 then
+ elseif gs==2 then
   cls(0)
   text_box("you died",64,46,8)
   if fade_d==0 then
    local bc=(time()*4)%2<1 and 6 or 0
    text_box("press x",64,82,bc)
   end
-  apply_fade(fade_v)
-  return
+ else
+  cls(1)
+  draw_bg_layer()
+  draw_main_layer()
+  draw_ents()
+  draw_sprojs()
+  local acw=acache[cur_anim].cw
+  local ax=(sp_anc[cur_anim] and sp_anc[cur_anim][cur_frame])
+        or (anc[cur_anim] and anc[cur_anim][cur_frame])
+        or acw\2
+  local flip=facing==-1
+  local dx=flip and px-(acw-1-ax) or px-ax
+  if plr_inv==0 or plr_inv%4<2 then
+   draw_char(cur_anim,cur_frame,dx-cam_x,py-cam_y,flip)
+  end
+  for p in all(parts) do
+   circfill(p.x-cam_x,p.y-cam_y,2,8)
+   circfill(p.x-cam_x-1,p.y-cam_y-1,1,14)
+  end
+  draw_hp()
+  print(gems,2,hp_h+4,8)
+  if zt then text_box(_zt[zt],64,100,7) end
  end
- cls(1)
-
- -- bg + main layers
- draw_bg_layer()
- draw_main_layer()
-
- -- draw entities and projectiles
- draw_ents()
- draw_sprojs()
-
- -- draw player anchored to body center
- local acw=acache[cur_anim].cw
- local ax=(sp_anc[cur_anim] and sp_anc[cur_anim][cur_frame])
-       or (anc[cur_anim] and anc[cur_anim][cur_frame])
-       or acw\2
- local flip=facing==-1
- local dx=flip and px-(acw-1-ax) or px-ax
- if plr_inv==0 or plr_inv%4<2 then
-  draw_char(cur_anim,cur_frame,dx-cam_x,py-cam_y,flip)
- end
-
- -- draw particles
- for p in all(parts) do
-  circfill(p.x-cam_x,p.y-cam_y,2,8)
-  circfill(p.x-cam_x-1,p.y-cam_y-1,1,14)
- end
-
- -- hud
- draw_hp()
- print(gems,2,hp_h+4,8)
  apply_fade(fade_v)
 end
