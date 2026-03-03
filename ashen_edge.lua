@@ -445,7 +445,7 @@ function resolve_y()
   return
  end
  if vy>=0 then
-  local tx0,tx1,ty=bx0\16,thi(bx1),thi(by1)
+  local tx0,tx1,ty=bx0\16,thi(bx1),by1\16
   local ptop=ty*16
   if prev_by1<=ptop then
    for tx=tx0,tx1 do
