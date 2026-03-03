@@ -286,13 +286,7 @@ function draw_char(a,f,sx,sy,flip,rot,rm)
    local col=ord(buf,idx)
    if rm then col=rm[col] or col end
    if col~=trans then
-    local dx,dy
-    if flip then
-     dx=cw-1-bx-x
-    else
-     dx=bx+x
-    end
-    dy=by+y
+    local dx,dy=flip and cw-1-bx-x or bx+x,by+y
     if rot==1 then
      dx,dy=cw-1-dy,dx
     elseif rot==2 then
@@ -395,7 +389,9 @@ function load_tiles()
   local a,b,c,d=peek(p,4)
   local e={type=a,tx=b,ty=c,group=d}
   p+=4
-  if a==8 then
+  if a==2 or a==6 then
+   e.cost=peek(p) p+=1
+  elseif a==8 then
    e.tw=peek(p) e.th=peek(p+1) p+=2
   end
   add(ents,e)
@@ -440,10 +436,7 @@ function tile_solid(tx,ty)
 end
 
 function box_hits_solid(bx0,by0,bx1,by1)
- local tx0=bx0\16
- local ty0=by0\16
- local tx1=thi(bx1)
- local ty1=thi(by1)
+ local tx0,ty0,tx1,ty1=bx0\16,by0\16,thi(bx1),thi(by1)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
    if tile_solid(tx,ty) then
@@ -490,8 +483,7 @@ function resolve_y()
 end
 
 function tr(cx,cy)
- local x=max(0,cx\16)
- local y=max(0,cy\16)
+ local x,y=max(0,cx\16),max(0,cy\16)
  return x,y,min(lvl_w-1,x+8),min(lvl_h-1,y+8)
 end
 
@@ -541,11 +533,8 @@ function draw_main_layer()
 end
 
 function update_camera()
- local target_x=px-64
- local target_y=py-64
- -- clamp to map bounds
- target_x=mid(0,target_x,lvl_w*16-128)
- target_y=mid(0,target_y,lvl_h*16-128)
+ local target_x,target_y=px-64,py-64
+ target_x,target_y=mid(0,target_x,lvl_w*16-128),mid(0,target_y,lvl_h*16-128)
  -- smooth follow, round to whole pixels
  cam_x+=flr((target_x-cam_x)*0.15+0.5)
  cam_y+=flr((target_y-cam_y)*0.15+0.5)
@@ -617,10 +606,8 @@ end
 function try_move_x(dx)
  -- move px by dx, stepping to avoid
  -- skipping through thin walls
- local step=cb_x1-cb_x0 -- box width
- local rem=abs(dx)
- local dir=1
- if dx<0 then dir=-1 end
+ local step=cb_x1-cb_x0
+ local rem,dir=abs(dx),sgn(dx)
  while rem>0 do
   local d=min(rem,step)
   px+=d*dir
@@ -684,11 +671,7 @@ function check_attacks()
   end
  end
  for e in all(ents) do
-  if e.type==2 then
-   if h(e.tx*16,e.ty*16,0) then
-    toggle_switch(e)
-   end
-  elseif e.type==7 then
+  if e.type==7 then
    if h(e.x,e.y,8) then e.lit,e.frame=false,7 end
   elseif e.type==3 and e.hp>0
    and e.state~="death" and e.inv_t==0 then
@@ -738,9 +721,8 @@ function init_ents()
    -- door: closed = frame 15
    e.anim,e.frame,e.state=a_door,15,0
   elseif e.type==2 then
-   -- switch: off = idle frame 1
-   e.anim,e.frame=a_sid,1
-   e.state,e.cooldown=0,0
+   e.x,e.y,e.anim,e.frame=e.tx*16+8,e.ty*16+8,a_sid,1
+   e.state,e.cooldown,e.cost=0,0,e.cost or 0
   elseif e.type==3 then
    -- spider
    e.x,e.y=e.tx*16,e.ty*16
@@ -758,7 +740,7 @@ function init_ents()
    if e.type==6 then
     e.x+=8 e.y+=16
     e.anim,e.frame=a_ptl,1
-    e.anim_t,e.active=0,false
+    e.anim_t,e.active,e.cost=0,false,e.cost or 0
    elseif e.type==7 then
     e.anim,e.frame=a_torch,1
     e.anim_t,e.lit=0,true
@@ -899,7 +881,7 @@ function wb_move(e)
  e.x+=e.vx
  if box_hits_solid(e.x-14,e.y-24,e.x+14,e.y) then
   if e.vx>0 then e.x=(e.x+13.99)\16*16-14
-  elseif e.vx<0 then e.x=(e.x-14)\16*16+16+14 end
+  elseif e.vx<0 then e.x=(e.x-14)\16*16+30 end
   e.vx=0
  end
  e.y+=e.vy
@@ -1005,7 +987,7 @@ function update_bot(e)
  end
  tc(e)
  local t,nf=ent_tick(e,spd)
- local ddx,ddy,dist=px-e.x,(py+11)-e.y,abs(px-e.x)
+ local ddx,ddy=px-e.x,(py+11)-e.y local dist=abs(ddx)
  local function spot()
   if e.atk_cd==0 and dist<(wb and 80 or 90) and abs(ddy)<32 then
    e.vx,e.mdir=0,ddx>0 and 1 or -1
@@ -1132,7 +1114,7 @@ function update_sprojs()
 end
 
 function update_ents()
- zt=nil
+ zt,near_ent=nil,nil
  for e in all(ents) do
   if e.type==2 then
    if e.cooldown>0 then e.cooldown-=1 end
@@ -1160,15 +1142,19 @@ function update_ents()
   elseif e.type==6 or e.type==7 and e.lit then
    local t,nf=ent_tick(e,6)
    if t then e.frame=e.frame%(e.type==7 and 6 or nf)+1 end
-   if e.type==6 and not e.active and abs(px-e.x)<12 and abs(py+8-e.y)<16 then
-    e.active=true
-    ckpt_x,ckpt_y=e.x,e.y
-   end
   elseif e.type==8 and px\16>=e.tx and px\16<e.tx+e.tw and py\16>=e.ty and py\16<e.ty+e.th then
    zt=e.group
   elseif e.type<=5 then
    update_bot(e)
   end
+  if (e.type==2 and e.state==0 or e.type==6 and not e.active) and abs(px-e.x)<12 and abs(py+8-e.y)<16 then
+   near_ent=e
+  end
+ end
+ if near_ent and btnp(3) and gems>=near_ent.cost then
+  gems-=near_ent.cost
+  if near_ent.type==2 then toggle_switch(near_ent)
+  else near_ent.active,ckpt_x,ckpt_y,plr_hp=true,near_ent.x,near_ent.y,3 end
  end
 end
 
@@ -1242,8 +1228,7 @@ function draw_ents()
   elseif e.type==5 then
    draw_bot(e,hb_anc,hellbot_cw,hellbot_ch)
   elseif e.type==3 then
-   local sx=e.x-cam_x
-   local sy=e.y-cam_y
+   local sx,sy=e.x-cam_x,e.y-cam_y
    local flip=e.mdir==-1
    local rot=sp_rot[e.surf+1]
    draw_char(e.anim,e.frame,sx,sy,flip,rot)
@@ -1252,8 +1237,7 @@ function draw_ents()
   elseif e.type==7 then
    draw_char(e.anim,e.frame,e.x-cam_x,e.y-cam_y)
   elseif e.type~=8 then
-   local sx=e.tx*16-cam_x
-   local sy=e.ty*16-cam_y
+   local sx,sy=e.tx*16-cam_x,e.ty*16-cam_y
    if e.type==1 then sx-=16 end
    draw_char(e.anim,e.frame,sx,sy)
   end
@@ -1459,20 +1443,10 @@ function _update60()
  resolve_y()
 
  -- fallback: bottom of map
- if py+cb_y1>=lvl_h*16 then
-  py=lvl_h*16-cb_y1
-  vy=0
-  if not grounded then
-   grounded=true
-   if state=="fall" then
-    set_anim(a_land,"land")
-   end
-  end
- end
+ if py+cb_y1>=lvl_h*16 then land_on(lvl_h*16) end
 
  -- clamp to map bounds
- local min_x=-cb_x0
- local max_x=lvl_w*16-1-cb_x1
+ local min_x,max_x=-cb_x0,lvl_w*16-1-cb_x1
  px=mid(min_x,px,max_x)
 
  -- attack hitbox vs destructibles + entities
@@ -1526,11 +1500,16 @@ function _draw()
    draw_char(cur_anim,cur_frame,dx-cam_x,py-cam_y,flip)
   end
   for p in all(parts) do
-   circfill(p.x-cam_x,p.y-cam_y,2,8)
-   circfill(p.x-cam_x-1,p.y-cam_y-1,1,14)
+   local qx,qy=p.x-cam_x,p.y-cam_y
+   circfill(qx,qy,2,8)
+   circfill(qx-1,qy-1,1,14)
   end
   draw_hp()
   print(gems,2,hp_h+4,8)
+  if near_ent then
+   local c=near_ent.cost
+   text_box(c>0 and "\131 "..c or "\131",near_ent.x-cam_x,near_ent.y-20-cam_y,gems>=c and 7 or 8)
+  end
   if zt then text_box(_zt[zt],64,108,7) end
  end
  apply_fade(fade_v)

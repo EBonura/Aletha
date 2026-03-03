@@ -1723,6 +1723,9 @@ def build_level_data(tileset, bg_tileset, map_data):
         map_section.append(ent.get("y", 0) & 0xFF)
         map_section.append(ent.get("group", 1) & 0xFF)
         ent_bytes += 4
+        if ent.get("type") in (2, 6):
+            map_section.append(ent.get("cost", 0) & 0xFF)
+            ent_bytes += 1
         if ent.get("type") == 8:
             map_section.append(ent.get("ew", 1) & 0xFF)
             map_section.append(ent.get("eh", 1) & 0xFF)
