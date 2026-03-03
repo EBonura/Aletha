@@ -234,6 +234,7 @@ end
 function cache_anims()
  la(char_base,1,cell_w,cell_h)
  la(title_base,a_title,128,128)
+ la(font_base,a_font,font_cw,font_ch)
  la(spider_base,a_spi,spider_cw,spider_ch)
  la(wheelbot_base,a_wbi,wheelbot_cw,wheelbot_ch)
  la(hellbot_base,a_hbi,hellbot_cw,hellbot_ch)
@@ -1214,21 +1215,25 @@ function update_ents()
 end
 
 function p8print(s,x,y,col)
- local cx=x
+ local cx,ff=x,acache[a_font].frames
  for i=1,#s do
   local f=font_map[ord(sub(s,i,i))]
-  if f then
-   if col then
-    local p=_fo[f]
-    while ord(_fs,p)<255 do
-     pset(cx+ord(_fs,p),y+ord(_fs,p+1),col)
-     p+=2
+  if f and col then
+   local buf,bx,by,bw,bh=unpack(ff[f])
+   if bw>0 then
+    bx+=cx by+=y
+    local idx=1
+    for dy=0,bh-1 do
+     for dx=0,bw-1 do
+      if ord(buf,idx)~=trans then
+       pset(bx+dx,by+dy,col)
+      end
+      idx+=1
+     end
     end
    end
-   cx+=font_adv[f]
-  else
-   cx+=font_cw
   end
+  cx+=(f and font_adv[f] or font_cw)
  end
  return cx-x
 end
@@ -1550,7 +1555,7 @@ function _draw()
   end
  else
   cls(1)
-  draw_bg_layer()
+  --draw_bg_layer()
   draw_main_layer()
   draw_ents()
   draw_sprojs()
@@ -1570,7 +1575,7 @@ function _draw()
   draw_hp()
   print(gems,2,hp_h+4,8)
   if zt then text_box(_zt[zt],64,100,7) end
+  printh(stat(1))
  end
  apply_fade(fade_v)
- printh(stat(1))
 end

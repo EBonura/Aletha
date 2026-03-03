@@ -1880,21 +1880,6 @@ def build_cart():
     font_frames, font_cw, font_ch, font_adv = extract_font_frames(ALKHEMIKAL_TTF, 16, FONT_CHARS)
     print(f"    alkhemikal: {len(font_frames)} chars, cell {font_cw}x{font_ch}")
 
-    # Generate sparse font data: only non-transparent pixel positions per glyph
-    font_sparse = bytearray()
-    total_sparse_pixels = 0
-    for fi, frame in enumerate(font_frames):
-        bx, by, bw, bh = get_frame_bbox(frame, font_cw, font_ch)
-        for dy in range(bh):
-            for dx in range(bw):
-                idx = (by + dy) * font_cw + (bx + dx)
-                if frame[idx] != TRANS:
-                    font_sparse.append(bx + dx)
-                    font_sparse.append(by + dy)
-                    total_sparse_pixels += 1
-        font_sparse.append(255)  # sentinel
-    print(f"    sparse font: {len(font_sparse)}b, {total_sparse_pixels} visible pixels")
-
     print("\nCompressing entity animations...")
     ent_anim_info = [
         ("door",     door_frames,     48,      48),
@@ -2411,12 +2396,9 @@ def build_cart():
     gen_lines.append(f'{ent_lhs}=unpack(split"{ent_rhs}")')
     # title + font in __sfx__ memory
     num_main = len(ANIMS) + len(ent_anim_info)
-    gen_lines.append(f"a_title={num_main+1}")
-    gen_lines.append(f"title_base={title_base_addr}")
-    gen_lines.append(f"font_cw={font_cw} font_ch={font_ch} font_n={len(font_frames)}")
-    fs_str = bytes_to_p8_str(font_sparse)
-    gen_lines.append(f"_fs={fs_str}")
-    gen_lines.append("_fo={} do local p=1 for f=1,font_n do _fo[f]=p while ord(_fs,p)<255 do p+=2 end p+=1 end end")
+    gen_lines.append(f"a_title={num_main+1} a_font={num_main+2}")
+    gen_lines.append(f"title_base={title_base_addr} font_base={font_base_addr}")
+    gen_lines.append(f"font_cw={font_cw} font_ch={font_ch}")
     adv_str = ",".join(str(a) for a in font_adv)
     gen_lines.append(f'font_adv=split"{adv_str}"')
     # spider — code string, multi-anim chunk at spider_base
@@ -2426,7 +2408,7 @@ def build_cart():
     }
     sp_vars = [sp_var_map[name] for name, _, _ in SPIDER_ANIMS]
     sp_lhs = ",".join(sp_vars)
-    sp_base_idx = num_main + 2  # after a_title (font no longer in acache)
+    sp_base_idx = num_main + 3  # after a_title, a_font
     sp_rhs = ",".join(str(sp_base_idx + i) for i in range(len(SPIDER_ANIMS)))
     gen_lines.append(f'{sp_lhs}=unpack(split"{sp_rhs}")')
     gen_lines.append(f"spider_base={spider_base_addr} spider_cw={SPIDER_W} spider_ch={SPIDER_H}")
