@@ -852,6 +852,141 @@ def encode_type4(name, frames_pixels, fw, fh, bpp=4, palette=None):
     return block, f"EG {bw}x{bh} data={total}b refs={ref_summary}/{n} m={mode_str}"
 
 
+# ── Type 5: Per-frame bbox + EG (no cross-frame refs) ──
+
+def encode_type5(name, frames_pixels, fw, fh, bpp=4, palette=None):
+    """Type 5: Each frame has its own bbox + independent EG encoding.
+    Great for animations where frame content varies wildly in position/size."""
+    n = len(frames_pixels)
+    frame_datas = []
+    frame_infos = []
+
+    for f in frames_pixels:
+        bx, by, bw, bh = get_frame_bbox(f, fw, fh)
+        if bw == 0 or bh == 0:
+            frame_datas.append(bytearray([0, 0, 0, 0]))
+            frame_infos.append((0, 0))
+            continue
+        cropped = crop_pixels(f, fw, bx, by, bw, bh)
+        if bpp < 4 and palette:
+            cropped = quantize_pixels(cropped, palette)
+        # Use EG encoding (same as type 4 but for a single frame, no ref)
+        enc, mode, order = _eg2_encode_frame(cropped, bpp, bw, bh)
+        fd = bytearray([bx, by, bw, bh])
+        fd.extend(enc)
+        frame_datas.append(fd)
+        frame_infos.append((bw, bh))
+
+    block = bytearray()
+    block.append(n)
+    block.append(5)  # type 5
+    block.append(bpp)
+    if bpp < 4 and palette:
+        block.extend(pack_palette(palette))
+    offset = 0
+    for fd in frame_datas:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(fd)
+    for fd in frame_datas:
+        block.extend(fd)
+
+    total = sum(len(d) for d in frame_datas)
+    max_bw = max((w for w, h in frame_infos), default=0)
+    max_bh = max((h for w, h in frame_infos), default=0)
+    return block, f"PF {max_bw}x{max_bh} data={total}b"
+
+
+# ── Type 6: Hybrid per-frame bbox + union refs ──
+
+def encode_type6(name, frames_pixels, fw, fh, bpp=4, palette=None):
+    """Type 6: Each frame independently chooses between:
+      - Union bbox + XOR ref (flag bit7=0): good for similar frames
+      - Per-frame bbox, no ref (flag bit7=1): good for wildly different frames
+    Best of both worlds."""
+    n = len(frames_pixels)
+    # Union bbox
+    ubx, uby, ubw, ubh = get_bbox(frames_pixels, fw, fh)
+    u_cropped = [crop_pixels(f, fw, ubx, uby, ubw, ubh) for f in frames_pixels]
+    if bpp < 4 and palette:
+        u_cropped = [quantize_pixels(f, palette) for f in u_cropped]
+    unpix = ubw * ubh
+
+    # Per-frame bboxes
+    pf_bboxes = [get_frame_bbox(f, fw, fh) for f in frames_pixels]
+    pf_cropped = []
+    for i, f in enumerate(frames_pixels):
+        bx, by, bw, bh = pf_bboxes[i]
+        if bw == 0:
+            pf_cropped.append([])
+        else:
+            c = crop_pixels(f, fw, bx, by, bw, bh)
+            if bpp < 4 and palette:
+                c = quantize_pixels(c, palette)
+            pf_cropped.append(c)
+
+    flags = []  # per-frame: 0-254 = union ref, 255 = per-frame bbox (no ref)
+    frame_data = []
+
+    for i in range(n):
+        # Option A: per-frame bbox, independent (like T5)
+        pbx, pby, pbw, pbh = pf_bboxes[i]
+        if pbw == 0:
+            best_pf = bytearray([0, 0, 0, 0])
+        else:
+            enc_pf, _, _ = _eg2_encode_frame(pf_cropped[i], bpp, pbw, pbh)
+            best_pf = bytearray([pbx, pby, pbw, pbh]) + enc_pf
+
+        # Option B: union bbox, no ref
+        best_enc, best_mode, best_order = _eg2_encode_frame(u_cropped[i], bpp, ubw, ubh)
+        best_ref = 255  # no ref
+        best_union = best_enc
+
+        # Option C: union bbox + ref to prev frame
+        for r in range(i):
+            if flags[r] >= 254:  # skip if ref frame used per-frame bbox
+                continue
+            xor_diff = [u_cropped[i][j] ^ u_cropped[r][j] for j in range(unpix)]
+            enc, mode, order = _eg2_encode_frame(xor_diff, bpp, ubw, ubh)
+            if len(enc) < len(best_union):
+                best_union = enc
+                best_ref = r
+
+        # Pick smaller: per-frame (flag=0x80|0x7f=255) vs union+ref
+        if len(best_pf) < len(best_union):
+            flags.append(254)  # marker: per-frame bbox
+            frame_data.append(best_pf)
+        else:
+            flags.append(best_ref)
+            frame_data.append(best_union)
+
+    # Build block
+    block = bytearray()
+    block.append(n)
+    block.append(6)  # type 6
+    block.append(bpp)
+    if bpp < 4 and palette:
+        block.extend(pack_palette(palette))
+    block.append(ubx)
+    block.append(uby)
+    block.append(ubw)
+    block.append(ubh)
+    for r in range(n):
+        block.append(flags[r])
+    offset = 0
+    for d in frame_data:
+        block.append(offset & 0xFF)
+        block.append((offset >> 8) & 0xFF)
+        offset += len(d)
+    for d in frame_data:
+        block.extend(d)
+
+    total = sum(len(d) for d in frame_data)
+    pf_count = sum(1 for f in flags if f == 254)
+    ref_count = sum(1 for f in flags if f < 254 and f != 255)
+    return block, f"HY {ubw}x{ubh} data={total}b pf={pf_count}/{n} refs={ref_count}/{n}"
+
+
 # ── Pick best encoding per animation ──
 
 def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
@@ -860,9 +995,17 @@ def encode_animation(name, frames_pixels, fw, fh, bpp='auto', palette=None):
     if bpp < 4 and palette is None:
         palette = build_palette(frames_pixels, bpp)
     n = len(frames_pixels)
-    block, info_str = encode_type4(name, frames_pixels, fw, fh, bpp, palette)
+
+    candidates = []
+    candidates.append(('T4', *encode_type4(name, frames_pixels, fw, fh, bpp, palette)))
+    candidates.append(('T5', *encode_type5(name, frames_pixels, fw, fh, bpp, palette)))
+    candidates.append(('T6', *encode_type6(name, frames_pixels, fw, fh, bpp, palette)))
+
+    best_tag, block, info_str = min(candidates, key=lambda c: len(c[1]))
+    others = " ".join(f"{t}={len(b)}b" for t, b, _ in candidates if t != best_tag)
+
     bpp_tag = f" [{bpp}bpp]"
-    info = f"    {name:12s}: {n:2d}f, {info_str} {len(block)}b{bpp_tag}"
+    info = f"    {name:12s}: {n:2d}f, {info_str} {len(block)}b{bpp_tag} {best_tag} ({others})"
     return block, info
 
 
@@ -1525,7 +1668,7 @@ def build_level_data(tileset, bg_tileset, map_data):
     # Step 6: Generate Lua metadata
     gen = []
     gen.append(f"-- level: {map_w}x{map_h}, {num_rt} tiles, {num_layers} layers, {total_bytes}b")
-    gen.append(f"map_base=0x2000")
+    gen.append(f"map_base=0")  # placeholder, overwritten by allocator
     gen.append(f"lvl_w={map_w} lvl_h={map_h}")
     gen.append(f"lvl_nt={num_rt} lvl_nl={num_layers} lvl_nst={num_spr_tiles}")
     if spawn_x >= 0:
@@ -1654,6 +1797,17 @@ def bytes_to_map_hex(data):
     row_bytes = 128  # 128 bytes per row = 256 hex chars
     for row in range(32):
         row_data = padded[row * row_bytes:(row + 1) * row_bytes]
+        lines.append("".join(f"{b:02x}" for b in row_data))
+    return "\n".join(lines)
+
+
+def bytes_to_gff_hex(data):
+    """Convert bytes to __gff__ section hex format (2 rows of 256 hex chars = 256 bytes)."""
+    padded = bytearray(data)
+    padded.extend(b'\x00' * (256 - len(padded)))
+    lines = []
+    for row in range(2):
+        row_data = padded[row * 128:(row + 1) * 128]
         lines.append("".join(f"{b:02x}" for b in row_data))
     return "\n".join(lines)
 
@@ -1790,6 +1944,8 @@ def build_cart():
     wb_all_frames = {}
     for wb_name, wb_file, src_fw, src_fh, wb_nf, frame_sel in WHEELBOT_ANIMS:
         frames = extract_frames_boss(wb_file, WHEELBOT_DIR, src_fw, src_fh, WHEELBOT_W, WHEELBOT_H, frame_sel)
+        # Merge lavender (13) → light grey (6) to reduce color count
+        frames = [[6 if c == 13 else c for c in f] for f in frames]
         wb_all_frames[wb_name] = frames
         block, info = encode_animation(wb_name, frames, WHEELBOT_W, WHEELBOT_H)
         wb_anim_blocks.append((wb_name, block))
@@ -1828,8 +1984,8 @@ def build_cart():
     hb_all_frames = {}
     for hb_name, hb_file, hb_nf in HELLBOT_ANIMS:
         frames = extract_frames_custom(hb_file, HELLBOT_DIR, HELLBOT_W, HELLBOT_H, hb_nf)
-        # merge color 1 (dark_blue) -> 5 (dark_grey) for 2bpp
-        frames = [[5 if c == 1 else c for c in f] for f in frames]
+        # merge dark_blue(1) and dark_grey(5) -> black(0) for 2bpp (keeps 0+6)
+        frames = [[0 if c in (1, 5) else c for c in f] for f in frames]
         hb_all_frames[hb_name] = frames
         block, info = encode_animation(hb_name, frames, HELLBOT_W, HELLBOT_H, bpp=2)
         hb_anim_blocks.append((hb_name, block))
@@ -1868,10 +2024,10 @@ def build_cart():
     bk_all_frames = {}
     for bk_name, bk_file, src_fw, src_fh, nf_override, frame_sel in BOSS_ANIMS:
         frames = extract_frames_boss(bk_file, BOSS_DIR, src_fw, src_fh, BOSS_W, BOSS_H, frame_sel)
-        # Remap brown (4) -> red (8) for blood color, merge near-black to 0
-        frames = [[8 if c == 4 else c for c in f] for f in frames]
+        # Remap to 2 colors: dark→0, red/warm→8 (forces 1bpp)
+        frames = [[TRANS if c == TRANS else (8 if c in (4,8,9,15) else 0) for c in f] for f in frames]
         bk_all_frames[bk_name] = frames
-        block, info = encode_animation(bk_name, frames, BOSS_W, BOSS_H, bpp=2)
+        block, info = encode_animation(bk_name, frames, BOSS_W, BOSS_H)
         bk_anim_blocks.append((bk_name, block))
         total_frames += len(frames)
         print(info)
@@ -1992,89 +2148,183 @@ def build_cart():
         char_chunk.append((off >> 8) & 0xFF)
     char_chunk.extend(anim_data)
 
-    # GFX: char_chunk + spider + wheelbot + hellbot + hp (title+font moved to __sfx__)
-    gfx_buf = bytearray(8192)
-    gfx_buf[:len(char_chunk)] = char_chunk
-    gfx_end = len(char_chunk)
-    spider_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(spider_chunk)] = spider_chunk
-    gfx_end += len(spider_chunk)
-    wheelbot_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(wheelbot_chunk)] = wheelbot_chunk
-    gfx_end += len(wheelbot_chunk)
-    hellbot_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(hellbot_chunk)] = hellbot_chunk
-    gfx_end += len(hellbot_chunk)
-    boss_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(boss_chunk)] = boss_chunk
-    gfx_end += len(boss_chunk)
-    portal_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(portal_chunk)] = portal_chunk
-    gfx_end += len(portal_chunk)
-    box_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(box_chunk)] = box_chunk
-    gfx_end += len(box_chunk)
-    hp_base_addr = gfx_end
-    gfx_buf[gfx_end:gfx_end+len(hp_chunk)] = hp_chunk
-    gfx_end += len(hp_chunk)
-    gfx_total = gfx_end
+    # ── Process level data (needed before memory allocation) ──
+    print("\nLoading tilesets...")
+    tileset = slice_tileset()
+    print(f"  {len(tileset)} unique main tiles from tileset")
+    bg_tileset = slice_bg_tileset()
+    print(f"  {len(bg_tileset)} unique BG tiles from bg_tileset")
 
-    # SFX: title + font packed from slot 63 downward, lower slots free for audio
-    sfx_buf = bytearray(68 * 64)  # 64 slots × 68 bytes
-    sfx_data = title_chunk + font_chunk  # pack title first, then font
-    sfx_slots_used = (len(sfx_data) + 67) // 68
-    sfx_first_slot = 64 - sfx_slots_used
-    sfx_data_offset = sfx_first_slot * 68
-    title_base_addr = 0x3200 + sfx_data_offset
-    font_base_addr = title_base_addr + len(title_chunk)
-    sfx_buf[sfx_data_offset:sfx_data_offset+len(sfx_data)] = sfx_data
-    sfx_data_used = len(sfx_data)
+    level_gen_lines = []
+    map_level_data = bytearray()
+    num_spr_tiles = 0
 
-    # Music: load from separate music cart, merge audio SFX into slots 0..sfx_first_slot-1
+    if os.path.exists(LEVEL_JSON):
+        print(f"\nReading level data from {LEVEL_JSON}...")
+        map_data = read_level_json(LEVEL_JSON)
+        if map_data:
+            map_level_data, num_rt, tile_flags, level_gen_lines, num_spr_tiles = build_level_data(tileset, bg_tileset, map_data)
+        else:
+            print("  No map data found in JSON, skipping level processing")
+    else:
+        print(f"\n  No level data at {LEVEL_JSON}, skipping level processing")
+
+    # ── Memory allocator ──
+    # Contiguous virtual address space spanning all available PICO-8 RAM:
+    #   0x0000-0x30FF  gfx+map+gff  (12544b, contiguous)
+    #   0x3100-0x31FF  __music__    (256b gap — skip, user's)
+    #   0x3200-0x42FF  __sfx__      (4352b)
+    # Data packs sequentially in virtual space. The 256b music gap is
+    # transparent: a one-line Lua peek wrapper skips it at runtime.
+    # vaddr < 0x3100 → physical = vaddr (identity)
+    # vaddr >= 0x3100 → physical = vaddr + 0x100 (skip music)
+
+    VGAP = 0x3100       # virtual address where music gap starts
+    GAP_SIZE = 0x100    # 256 bytes (__music__)
+    SFX_PHYS_END = 0x4300
+    TOTAL_VIRT = VGAP + (SFX_PHYS_END - VGAP - GAP_SIZE)  # 12544 + 4352 = 16896
+
+    def vaddr_to_phys(va):
+        return va if va < VGAP else va + GAP_SIZE
+
+    # All data chunks, packed in this order
+    data_chunks = [
+        ("char",     char_chunk),
+        ("spider",   spider_chunk),
+        ("wheelbot", wheelbot_chunk),
+        ("hellbot",  hellbot_chunk),
+        ("boss",     boss_chunk),
+        ("portal",   portal_chunk),
+        ("box",      box_chunk),
+        ("hp",       hp_chunk),
+        ("level",    map_level_data),
+        ("title",    title_chunk),
+        ("font",     font_chunk),
+    ]
+
+    # Pack sequentially in virtual address space
+    vptr = 0
+    placements = {}  # name -> virtual base address
+    print("\n=== MEMORY ALLOCATION ===")
+    for name, chunk in data_chunks:
+        sz = len(chunk)
+        if sz == 0:
+            placements[name] = vptr
+            continue
+        if vptr + sz > TOTAL_VIRT:
+            print(f"  ERROR: {name} ({sz}b) exceeds capacity!")
+            break
+        placements[name] = vptr
+        pa_start = vaddr_to_phys(vptr)
+        pa_end = vaddr_to_phys(vptr + sz - 1)
+        # Show which physical sections this chunk spans
+        regions = []
+        if pa_start < 0x2000: regions.append("gfx")
+        if pa_start < 0x3000 and pa_end >= 0x2000: regions.append("map")
+        if pa_start < 0x3100 and pa_end >= 0x3000: regions.append("gff")
+        if pa_end >= 0x3200: regions.append("sfx")
+        straddle = " *SPANS GAP*" if pa_start < 0x3100 and pa_end >= 0x3200 else ""
+        print(f"  {name:12s}: 0x{pa_start:04x}-0x{pa_end:04x}  {sz:5d}b  [{'+'.join(regions)}]{straddle}")
+        vptr += sz
+
+    total_used = vptr
+    gfx_used = min(total_used, 0x2000)
+    map_used = max(0, min(total_used, 0x3000) - 0x2000)
+    gff_used = max(0, min(total_used, VGAP) - 0x3000)
+    sfx_used = max(0, total_used - VGAP)
+    free = TOTAL_VIRT - total_used
+    print(f"  ── total: {total_used}/{TOTAL_VIRT}b ({total_used*100//TOTAL_VIRT}%)")
+    print(f"     gfx:{gfx_used}/8192 map:{map_used}/4096 gff:{gff_used}/256 sfx:{sfx_used}/4352")
+    print(f"     free: {free}b")
+
+    # All base addresses are VIRTUAL — the peek wrapper translates at runtime
+    char_base_addr    = placements["char"]
+    spider_base_addr  = placements["spider"]
+    wheelbot_base_addr= placements["wheelbot"]
+    hellbot_base_addr = placements["hellbot"]
+    boss_base_addr    = placements["boss"]
+    portal_base_addr  = placements["portal"]
+    box_base_addr     = placements["box"]
+    hp_base_addr      = placements["hp"]
+    map_base_addr     = placements["level"]
+    title_base_addr   = placements["title"]
+    font_base_addr    = placements["font"]
+
+    # ── Build physical memory buffers ──
+    gfx_buf = bytearray(8192)   # 0x0000-0x1FFF
+    map_buf = bytearray(4096)   # 0x2000-0x2FFF
+    gff_buf = bytearray(256)    # 0x3000-0x30FF
+    sfx_buf = bytearray(68*64)  # 0x3200-0x42FF
+
+    for name, chunk in data_chunks:
+        if len(chunk) == 0:
+            continue
+        va = placements[name]
+        for i, b in enumerate(chunk):
+            pa = vaddr_to_phys(va + i)
+            if pa < 0x2000:
+                gfx_buf[pa] = b
+            elif pa < 0x3000:
+                map_buf[pa - 0x2000] = b
+            elif pa < 0x3100:
+                gff_buf[pa - 0x3000] = b
+            elif pa < 0x3200:
+                assert False, f"BUG: {name} byte at phys 0x{pa:04x} in music gap!"
+            else:
+                sfx_buf[pa - 0x3200] = b
+
+    # ── Music: load from separate music cart ──
     music_buf = bytearray(256)
     music_sfx, music_pat = load_music_cart(MUSIC_P8)
     audio_slots = 0
+    # Data flows into sfx from the start; audio sfx go into higher slots
+    sfx_data_slots = (sfx_used + 67) // 68 if sfx_used > 0 else 0
+
     if music_sfx is not None:
-        max_audio_slot = sfx_first_slot  # slots 0..max_audio_slot-1 available
-        # Copy audio SFX from music cart (only non-empty slots within range)
-        for s in range(max_audio_slot):
-            slot_data = music_sfx[s * 68:(s + 1) * 68]
+        # Remap: shift audio SFX up by sfx_data_slots to avoid data region
+        shift = sfx_data_slots
+        for src_slot in range(64):
+            slot_data = music_sfx[src_slot * 68:(src_slot + 1) * 68]
             if any(b != 0 for b in slot_data):
-                sfx_buf[s * 68:(s + 1) * 68] = slot_data
+                dst_slot = src_slot + shift
+                if dst_slot >= 64:
+                    print(f"  ERROR: audio SFX {src_slot} remapped to {dst_slot} (out of range)!")
+                    continue
+                sfx_buf[dst_slot * 68:(dst_slot + 1) * 68] = slot_data
                 audio_slots += 1
-        music_buf = music_pat
-        # Validate: warn if music references slots in the data region
+        # Remap music pattern references: shift SFX indices up
+        music_buf = bytearray(music_pat)
         for i in range(64):
+            raw = [music_pat[i * 4 + c] for c in range(4)]
+            # Mute empty patterns so they can't play data SFX
+            if all(b == 0 for b in raw):
+                for ch in range(4):
+                    music_buf[i * 4 + ch] = 0x40  # bit 6 = muted
+                continue
             for ch in range(4):
-                idx = music_buf[i * 4 + ch] & 0x3F
-                if idx >= max_audio_slot and idx < 64:
-                    flag_bits = (music_buf[i * 4 + ch] >> 7) & 1
-                    if flag_bits == 0 or True:  # check all references
-                        print(f"  WARNING: music pattern {i} ch{ch} references SFX {idx} (in data region {sfx_first_slot}-63)!")
+                b = music_buf[i * 4 + ch]
+                idx = b & 0x3F
+                flags = b & 0xC0
+                new_idx = idx + shift
+                if new_idx >= 64:
+                    print(f"  ERROR: music pattern {i} ch{ch} SFX {idx}→{new_idx} out of range!")
+                else:
+                    music_buf[i * 4 + ch] = flags | (new_idx & 0x3F)
         print(f"\nLoaded music from {MUSIC_P8}:")
-        print(f"  {audio_slots} audio SFX slots (0-{max_audio_slot-1} available)")
-        pat_count = sum(1 for i in range(64) if any(music_buf[i*4+c] & 0x7F != 0x41 and music_buf[i*4+c] & 0x7F != 0 for c in range(4)))
+        print(f"  {audio_slots} audio SFX (remapped +{shift}: slots {shift}-{shift+audio_slots-1})")
+        print(f"  Data uses sfx slots 0-{sfx_data_slots-1}, audio in {sfx_data_slots}-63")
+        pat_count = sum(1 for i in range(64) if any(music_buf[i*4+c] & 0x3F != 0 for c in range(4)))
         print(f"  {pat_count} music patterns")
     else:
         print(f"\n  No music cart at {MUSIC_P8}, skipping music")
 
-    print(f"\n  spider_base=0x{spider_base_addr:04x}  wheelbot_base=0x{wheelbot_base_addr:04x}  hellbot_base=0x{hellbot_base_addr:04x}")
-    print(f"  boss_base=0x{boss_base_addr:04x}  portal_base=0x{portal_base_addr:04x}  hp_base=0x{hp_base_addr:04x}")
-    print(f"  title_base=0x{title_base_addr:04x}  font_base=0x{font_base_addr:04x} (in __sfx__ slots {sfx_first_slot}-63, {sfx_slots_used} slots)")
-
-    print(f"\n=== TOTAL ===")
-    print(f"  {num_anims} anims ({len(ANIMS)} player + {len(ent_anim_info)} entity), {total_frames} frames")
-    print(f"  __gfx__: {gfx_total} / 8192 bytes ({gfx_total*100//8192}%)")
-    print(f"  __sfx__: {sfx_data_used}b in slots {sfx_first_slot}-63 ({sfx_slots_used} slots, {sfx_first_slot} free for audio)")
-
-    if gfx_total > 8192:
-        print(f"  WARNING: __gfx__ exceeds by {gfx_total - 8192} bytes!")
-        print(f"  (but generating cart anyway for testing)")
-
     # Build generated data block
     gen_lines = []
-    gen_lines.append(f"-- {total_frames} frames, {num_anims} anims")
-    gen_lines.append(f"-- compressed: {gfx_total}/8192 gfx + {sfx_data_used}/4352 sfx")
+    gen_lines.append(f"-- {total_frames} frames, {num_anims} anims, {total_used}b vmem")
+    # Peek wrapper: skips the 256b music gap, ONLY for our data range
+    # vaddrs [0x3100, total_used) need +0x100; everything else passes through
+    if sfx_used > 0:
+        gen_lines.append(f"do local _p=peek peek=function(a,n) if a>=0x3100 and a<0x{total_used:04x} then a+=0x100 end if n then return _p(a,n) else return _p(a) end end end")
     gen_lines.append(f"char_base=0")
     gen_lines.append(f"cell_w={CELL_W} cell_h={CELL_H}")
     gen_lines.append(f"trans={TRANS}")
@@ -2204,36 +2454,23 @@ def build_cart():
     gen_lines.append(f'_a=split("{anc_str}","|",false)')
     gen_lines.append("anc={} for i=1,#_a do anc[i]=split(_a[i]) end")
 
+    # Override map_base in level gen_lines with allocated address
+    if level_gen_lines:
+        level_gen_lines = [l.replace("map_base=0", f"map_base={map_base_addr}") if l.startswith("map_base=") else l for l in level_gen_lines]
+
+    # No peek wrapper needed: each chunk is fully within one contiguous region,
+    # and base addresses are physical — peek() reads the right bytes directly.
+
+    # Combine all generated blocks
     generated_block = "\n".join(gen_lines)
-
-    # ── Process level data ──
-    level_gen_lines = []
-    map_hex = ""
-
-    print("\nLoading tilesets...")
-    tileset = slice_tileset()
-    print(f"  {len(tileset)} unique main tiles from tileset")
-    bg_tileset = slice_bg_tileset()
-    print(f"  {len(bg_tileset)} unique BG tiles from bg_tileset")
-
-    num_spr_tiles = 0
-    if os.path.exists(LEVEL_JSON):
-        print(f"\nReading level data from {LEVEL_JSON}...")
-        map_data = read_level_json(LEVEL_JSON)
-        if map_data:
-            map_section, num_rt, tile_flags, level_gen_lines, num_spr_tiles = build_level_data(tileset, bg_tileset, map_data)
-            map_hex = bytes_to_map_hex(map_section)
-        else:
-            print("  No map data found in JSON, skipping level processing")
-    else:
-        print(f"\n  No level data at {LEVEL_JSON}, skipping level processing")
-
-    # Combine generated blocks
     if level_gen_lines:
         generated_block += "\n" + "\n".join(level_gen_lines)
 
-    # Convert final gfx buffer to hex
-    gfx = bytes_to_gfx(gfx_buf)
+    # Convert buffers to hex
+    gfx_hex = bytes_to_gfx(gfx_buf)
+    map_hex = bytes_to_map_hex(map_buf)
+    gff_hex = bytes_to_gff_hex(gff_buf)
+    sfx_hex = bytes_to_sfx_hex(sfx_buf)
 
     # Read game lua, inject generated data
     game_lua_path = os.path.join(DIR, "ashen_edge.lua")
@@ -2247,13 +2484,9 @@ def build_cart():
     i1 = game_lua.index(marker_end) + len(marker_end)
     lua_code = game_lua[:i0] + marker_start + "\n" + generated_block + "\n" + marker_end + game_lua[i1:]
 
-    # Build map section
-    map_section = ""
-    if map_hex:
-        map_section = f"\n__map__\n{map_hex}"
-
-    # Build sfx section
-    sfx_hex = bytes_to_sfx_hex(sfx_buf)
+    # Build sections — always include __map__ and __gff__ (they may contain data now)
+    map_section = f"\n__map__\n{map_hex}"
+    gff_section = f"\n__gff__\n{gff_hex}"
     sfx_section = f"\n__sfx__\n{sfx_hex}"
 
     # Build music section (only if we have music data)
@@ -2267,7 +2500,7 @@ version 42
 __lua__
 {lua_code}
 __gfx__
-{gfx}{map_section}{sfx_section}{music_section}
+{gfx_hex}{map_section}{gff_section}{sfx_section}{music_section}
 """
 
     with open(OUTPUT_P8, "w") as f:

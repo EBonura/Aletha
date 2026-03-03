@@ -12,7 +12,7 @@
 combo_chain={a_atk1,a_xslice}
 
 -- game state: 0=title, 1=play
-gs=0
+gs=0 tt=0
 
 -- fade: v=0 clear, v=8 black, d=direction (1=out,-1=in,0=idle)
 fade_v=8 fade_d=-1 fade_t=0
@@ -152,6 +152,7 @@ function read_anim(a,cb)
  local na=peek(cb)
  local ab=cb+3+na*2+pk2(cb+3+(a-1)*2)
  local nf=peek(ab)
+ local atype=peek(ab+1)
  local bpp=peek(ab+2)
  local np=bpp<4 and (1<<bpp) or 0
  local pal={}
@@ -160,10 +161,13 @@ function read_anim(a,cb)
   pal[i+1]=i%2==0 and (b>>4)&0xf or b&0xf
  end
  local h=ab+3+np\2
+ if atype==5 then
+  return {nf=nf,bpp=bpp,pal=pal,atype=5,fo_off=h,data_off=h+nf*2}
+ end
  local bx,by,bw,bh=peek(h,4)
  local ro=h+4
  return {
-  nf=nf,bpp=bpp,pal=pal,
+  nf=nf,bpp=bpp,pal=pal,atype=atype,
   bx=bx,by=by,bw=bw,bh=bh,
   ref_off=ro,fo_off=ro+nf,
   data_off=ro+nf*3
@@ -175,23 +179,58 @@ sp_anc={}
 
 function decode_anim(ai)
  local frames={}
+ if ai.atype==5 then
+  for f=1,ai.nf do
+   local foff=pk2(ai.fo_off+(f-1)*2)
+   local fa=ai.data_off+foff
+   local bx,by,bw,bh=peek(fa,4)
+   if bw==0 then
+    frames[f]={"",0,0,0,0}
+   else
+    local d=decode_eg2(fa+4,bw*bh,ai.bpp,bw)
+    if ai.bpp<4 and #ai.pal>0 then
+     for i=1,#d do d[i]=ai.pal[d[i]+1] or trans end
+    end
+    frames[f]={chr(unpack(d)),bx,by,bw,bh}
+   end
+  end
+  return frames
+ end
  local npix=ai.bw*ai.bh
  local zeros={}
  for i=1,npix do zeros[i]=0 end
  for f=1,ai.nf do
   local ref=peek(ai.ref_off+f-1)
   local foff=pk2(ai.fo_off+(f-1)*2)
-  local d=decode_eg2(ai.data_off+foff,npix,ai.bpp,ai.bw)
-  local base=ref==255 and zeros or frames[ref+1][1]
-  for i=1,npix do d[i]=d[i]^^base[i] end
-  frames[f]={d,ai.bx,ai.by,ai.bw,ai.bh}
- end
- for f=1,#frames do
-  local buf=frames[f][1]
-  if ai.bpp<4 and #ai.pal>0 then
-   for i=1,#buf do buf[i]=ai.pal[buf[i]+1] or trans end
+  local fa=ai.data_off+foff
+  if ref==254 then
+   -- per-frame bbox (type 6 hybrid)
+   local bx,by,bw,bh=peek(fa,4)
+   if bw==0 then
+    frames[f]={"",0,0,0,0}
+   else
+    local d=decode_eg2(fa+4,bw*bh,ai.bpp,bw)
+    if ai.bpp<4 and #ai.pal>0 then
+     for i=1,#d do d[i]=ai.pal[d[i]+1] or trans end
+    end
+    frames[f]={chr(unpack(d)),bx,by,bw,bh}
+   end
+  else
+   local d=decode_eg2(fa,npix,ai.bpp,ai.bw)
+   local base=ref==255 and zeros or frames[ref+1][1]
+   for i=1,npix do d[i]=d[i]^^base[i] end
+   frames[f]={d,ai.bx,ai.by,ai.bw,ai.bh}
   end
-  frames[f][1]=chr(unpack(buf))
+ end
+ -- palette map + stringify (after all xor refs resolved)
+ for f=1,#frames do
+  if type(frames[f][1])~="string" then
+   local d=frames[f][1]
+   if ai.bpp<4 and #ai.pal>0 then
+    for i=1,#d do d[i]=ai.pal[d[i]+1] or trans end
+   end
+   frames[f][1]=chr(unpack(d))
+  end
  end
  return frames
 end
@@ -1221,10 +1260,10 @@ end
 function text_box(txt,cx,cy,col,sp)
  sp=sp or 0
  local tw=twidth(txt,sp)
- local pd=8
- local bh=font_ch+pd*2
- local bx,by=cx-tw\2-pd,cy-bh\2
- local bw=tw+pd*2
+ local px,py=8,5
+ local bh=font_ch+py*2
+ local bx,by=cx-tw\2-px,cy-bh\2
+ local bw=tw+px*2
  local s=box_s
  rectfill(bx+4,by+4,bx+bw-5,by+bh-5,0)
  draw_char(a_box,1,bx,by)
@@ -1235,7 +1274,7 @@ function text_box(txt,cx,cy,col,sp)
  line(bx+s,by+bh-4,bx+bw-s-1,by+bh-4,7)
  line(bx+3,by+s,bx+3,by+bh-s-1,7)
  line(bx+bw-4,by+s,bx+bw-4,by+bh-s-1,7)
- p8print(txt,cx-tw\2,by+pd,col,sp)
+ p8print(txt,cx-tw\2,by+py,col,sp)
 end
 
 function draw_bot(e,at,cw,ch)
@@ -1518,9 +1557,11 @@ function _draw()
  if gs==0 then
   cls(0)
   draw_char(a_title,1,0,0)
-  text_box("Ashen Edge",64,20,8)
-  if (time()*2)%2<1 then
-   text_box("Press X",64,112,6)
+  text_box("Aletha",36,20,8)
+  tt+=1
+  if tt>60 then
+   local bc=tt%8<4 and 6 or 0
+   text_box("press x",96,112,bc)
   end
   apply_fade(fade_v)
   return
@@ -1528,8 +1569,9 @@ function _draw()
  if gs==2 then
   cls(0)
   text_box("you died",64,46,8)
-  if fade_d==0 and (time()*2)%2<1 then
-   text_box("press x",64,82,6)
+  if fade_d==0 then
+   local bc=(time()*4)%2<1 and 6 or 0
+   text_box("press x",64,82,bc)
   end
   apply_fade(fade_v)
   return
