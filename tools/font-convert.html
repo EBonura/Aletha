@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Font → Pixel Art</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #1a1a2e; color: #c2c3c7; font-family: monospace; font-size: 13px;
+         display: flex; flex-direction: column; align-items: center; padding: 32px 16px; gap: 16px; min-height: 100vh; }
+  h1 { color: #ff77a8; font-size: 16px; letter-spacing: 2px; text-transform: uppercase; }
+
+  #drop-zone {
+    width: 560px; height: 90px; border: 2px dashed #5f574f; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    flex-direction: column; gap: 6px; transition: border-color 0.2s, background 0.2s;
+  }
+  #drop-zone:hover, #drop-zone.dragover { border-color: #ff77a8; background: rgba(255,119,168,0.05); }
+  #drop-zone strong { color: #fff1e8; }
+  #drop-zone span { color: #83769c; }
+  #file-input { display: none; }
+
+  .panel { background: #111122; border: 1px solid #2a2a3e; border-radius: 4px; padding: 12px 16px; width: 560px; }
+  .panel-title { color: #83769c; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .slider-row { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 160px; }
+  .slider-row label { color: #83769c; white-space: nowrap; width: 90px; }
+  .slider-row input[type=range] { flex: 1; accent-color: #ff77a8; cursor: pointer; }
+  .slider-row .val { color: #fff1e8; width: 36px; text-align: right; }
+  select { background: #2a2a3e; border: 1px solid #5f574f; color: #fff1e8; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-family: monospace; font-size: 12px; }
+  .select-row { display: flex; align-items: center; gap: 8px; }
+  .select-row label { color: #83769c; }
+
+  textarea { width: 100%; background: #2a2a3e; border: 1px solid #5f574f; color: #fff1e8;
+             padding: 6px 8px; border-radius: 3px; font-family: monospace; font-size: 12px;
+             resize: vertical; min-height: 48px; }
+
+  .bottom-row { display: flex; align-items: center; gap: 12px; }
+  button.primary { background: #ff77a8; color: #000; border: none; padding: 6px 16px;
+    border-radius: 3px; cursor: pointer; font-family: monospace; font-size: 13px; font-weight: bold; }
+  button.primary:hover { background: #ff004d; }
+  button.primary:disabled { background: #5f574f; color: #83769c; cursor: default; }
+
+  #preview-wrap {
+    background: #000; border: 1px solid #5f574f; overflow: auto;
+    max-width: 800px; max-height: 600px;
+  }
+  #preview-canvas { image-rendering: pixelated; display: block; }
+  #info { color: #5f574f; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>Font → Pixel Art</h1>
+
+<div id="drop-zone">
+  <strong>Drop a font file here (.ttf / .otf)</strong>
+  <span>or click to browse</span>
+  <input type="file" id="file-input" accept=".ttf,.otf">
+</div>
+
+<div class="panel">
+  <div class="panel-title">Settings</div>
+  <div class="row">
+    <div class="slider-row">
+      <label>Font size (px)</label>
+      <input type="range" id="font-size" min="4" max="64" value="8">
+      <span class="val" id="font-size-val">8</span>
+    </div>
+    <div class="slider-row">
+      <label>Threshold</label>
+      <input type="range" id="threshold" min="1" max="254" value="128">
+      <span class="val" id="threshold-val">128</span>
+    </div>
+    <div class="slider-row">
+      <label>Preview scale</label>
+      <input type="range" id="preview-scale" min="1" max="8" value="4">
+      <span class="val" id="preview-scale-val">4</span>
+    </div>
+    <div class="select-row">
+      <label>Layout:</label>
+      <select id="layout">
+        <option value="strip">Single row</option>
+        <option value="grid" selected>Grid (16 cols)</option>
+      </select>
+    </div>
+    <div class="select-row">
+      <label>BG:</label>
+      <select id="bg-color">
+        <option value="black" selected>Black</option>
+        <option value="white">White</option>
+        <option value="transparent">Transparent</option>
+      </select>
+    </div>
+    <div class="select-row">
+      <label>FG:</label>
+      <select id="fg-color">
+        <option value="white" selected>White</option>
+        <option value="black">Black</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Characters to render</div>
+  <textarea id="chars"></textarea>
+</div>
+
+<div id="preview-wrap" style="display:none">
+  <canvas id="preview-canvas"></canvas>
+</div>
+
+<div class="bottom-row">
+  <button class="primary" id="render-btn" disabled>Render</button>
+  <button class="primary" id="download-btn" disabled>Download PNG</button>
+  <span id="info">No font loaded.</span>
+</div>
+
+<script>
+// Default charset: space + printable ASCII 33–126
+const DEFAULT_CHARS = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+document.getElementById("chars").value = DEFAULT_CHARS;
+
+const dropZone    = document.getElementById("drop-zone");
+const fileInput   = document.getElementById("file-input");
+const fontSizeEl  = document.getElementById("font-size");
+const thresholdEl = document.getElementById("threshold");
+const scaleEl     = document.getElementById("preview-scale");
+const layoutEl    = document.getElementById("layout");
+const bgEl        = document.getElementById("bg-color");
+const fgEl        = document.getElementById("fg-color");
+const charsEl     = document.getElementById("chars");
+const renderBtn   = document.getElementById("render-btn");
+const downloadBtn = document.getElementById("download-btn");
+const previewWrap = document.getElementById("preview-wrap");
+const previewCanvas = document.getElementById("preview-canvas");
+const info        = document.getElementById("info");
+
+let fontUrl = null;
+let fontFace = null;
+let lastResult = null;
+
+// Slider labels
+[["font-size","font-size-val"],["threshold","threshold-val"],["preview-scale","preview-scale-val"]].forEach(([id,vid]) => {
+  const el = document.getElementById(id);
+  const vl = document.getElementById(vid);
+  el.addEventListener("input", () => { vl.textContent = el.value; fontFace && render(); });
+});
+layoutEl.addEventListener("change", () => fontFace && render());
+bgEl.addEventListener("change", () => fontFace && render());
+fgEl.addEventListener("change", () => fontFace && render());
+charsEl.addEventListener("input", () => fontFace && render());
+
+// Drop / browse
+dropZone.addEventListener("click", () => fileInput.click());
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", e => { e.preventDefault(); dropZone.classList.remove("dragover"); loadFont(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", () => loadFont(fileInput.files[0]));
+
+let fontCounter = 0;
+function loadFont(file) {
+  if (!file) return;
+  if (fontUrl) URL.revokeObjectURL(fontUrl);
+  fontUrl = URL.createObjectURL(file);
+  const name = "pf" + (++fontCounter);
+  fontFace = new FontFace(name, `url(${fontUrl})`);
+  fontFace.load().then(ff => {
+    document.fonts.add(ff);
+    info.textContent = `Loaded: ${file.name}`;
+    renderBtn.disabled = false;
+    render();
+  }).catch(e => {
+    info.textContent = `Error loading font: ${e.message}`;
+  });
+}
+
+renderBtn.addEventListener("click", () => fontFace && render());
+
+function render() {
+  if (!fontFace) return;
+  const fontSize  = parseInt(fontSizeEl.value);
+  const threshold = parseInt(thresholdEl.value);
+  const scale     = parseInt(scaleEl.value);
+  const layout    = layoutEl.value;
+  const bg        = bgEl.value;
+  const fg        = fgEl.value;
+  const chars     = charsEl.value;
+  if (!chars.length) return;
+
+  const fontName = fontFace.family;
+
+  // Measure each character at fontSize using an offscreen canvas
+  const meas = document.createElement("canvas");
+  meas.width = fontSize * 4; meas.height = fontSize * 4;
+  const mctx = meas.getContext("2d");
+  mctx.font = `${fontSize}px "${fontName}"`;
+  mctx.textBaseline = "alphabetic";
+
+  // Find cell size: advance width per char + height
+  // Use fontSize as cell height, measure max advance for width
+  const metrics = [...chars].map(ch => mctx.measureText(ch));
+  const cellW = Math.max(1, Math.ceil(Math.max(...metrics.map(m => m.width))));
+  const cellH = fontSize;
+
+  const nChars = chars.length;
+  const cols = layout === "grid" ? 16 : nChars;
+  const rows = layout === "grid" ? Math.ceil(nChars / 16) : 1;
+
+  const outW = cols * cellW;
+  const outH = rows * cellH;
+
+  const out = document.createElement("canvas");
+  out.width = outW; out.height = outH;
+  const ctx = out.getContext("2d");
+
+  // Fill background
+  if (bg === "transparent") {
+    ctx.clearRect(0, 0, outW, outH);
+  } else {
+    ctx.fillStyle = bg === "white" ? "#ffffff" : "#000000";
+    ctx.fillRect(0, 0, outW, outH);
+  }
+
+  // Draw each char into a temp canvas, threshold, paste
+  const tmp = document.createElement("canvas");
+  tmp.width = cellW; tmp.height = cellH;
+  const tctx = tmp.getContext("2d");
+  const fgRgb = fg === "white" ? [255,255,255] : [0,0,0];
+  const bgRgb = bg === "white" ? [255,255,255] : bg === "black" ? [0,0,0] : null;
+
+  [...chars].forEach((ch, idx) => {
+    const col = layout === "grid" ? idx % 16 : idx;
+    const row = layout === "grid" ? Math.floor(idx / 16) : 0;
+
+    // Render char to temp
+    tctx.clearRect(0, 0, cellW, cellH);
+    if (bgRgb) { tctx.fillStyle = bg === "white" ? "#fff" : "#000"; tctx.fillRect(0, 0, cellW, cellH); }
+    tctx.font = `${fontSize}px "${fontName}"`;
+    tctx.textBaseline = "alphabetic";
+    tctx.fillStyle = "#fff";
+    // Draw at bottom of cell (baseline = cellH - descent approx)
+    const m = tctx.measureText(ch);
+    const descent = m.fontBoundingBoxDescent ?? Math.round(fontSize * 0.2);
+    tctx.fillText(ch, 0, cellH - descent);
+
+    // Threshold: read alpha channel, output fg/bg per pixel
+    const imgd = tctx.getImageData(0, 0, cellW, cellH);
+    const px = imgd.data;
+    for (let i = 0; i < cellW * cellH; i++) {
+      const a = px[i*4+3];
+      const on = a >= threshold;
+      px[i*4]   = on ? fgRgb[0] : (bgRgb ? bgRgb[0] : 0);
+      px[i*4+1] = on ? fgRgb[1] : (bgRgb ? bgRgb[1] : 0);
+      px[i*4+2] = on ? fgRgb[2] : (bgRgb ? bgRgb[2] : 0);
+      px[i*4+3] = (on || bgRgb) ? 255 : 0;
+    }
+    tctx.putImageData(imgd, 0, 0);
+
+    ctx.drawImage(tmp, col * cellW, row * cellH);
+  });
+
+  lastResult = out;
+
+  // Preview at scale
+  previewCanvas.width  = outW * scale;
+  previewCanvas.height = outH * scale;
+  const pctx = previewCanvas.getContext("2d");
+  pctx.imageSmoothingEnabled = false;
+  pctx.drawImage(out, 0, 0, outW * scale, outH * scale);
+  previewWrap.style.display = "block";
+
+  info.textContent = `Cell: ${cellW}×${cellH}px | Sheet: ${outW}×${outH}px | ${nChars} chars`;
+  downloadBtn.disabled = false;
+  downloadBtn.onclick = () => {
+    const a = document.createElement("a");
+    a.download = `font_${fontSize}px.png`;
+    a.href = out.toDataURL("image/png");
+    a.click();
+  };
+}
+</script>
+</body>
+</html>

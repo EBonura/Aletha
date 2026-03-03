@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PICO-8 Image Converter</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #1a1a2e; color: #c2c3c7; font-family: monospace; font-size: 13px; display: flex; flex-direction: column; align-items: center; padding: 32px 16px; min-height: 100vh; gap: 16px; }
+  h1 { color: #ff77a8; font-size: 16px; letter-spacing: 2px; text-transform: uppercase; }
+
+  #drop-zone {
+    width: 560px; height: 100px; border: 2px dashed #5f574f; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    transition: border-color 0.2s, background 0.2s; flex-direction: column; gap: 6px;
+  }
+  #drop-zone:hover, #drop-zone.dragover { border-color: #ff77a8; background: rgba(255,119,168,0.05); }
+  #drop-zone span { color: #83769c; }
+  #drop-zone strong { color: #fff1e8; }
+  #file-input { display: none; }
+
+  .panel { background: #111122; border: 1px solid #2a2a3e; border-radius: 4px; padding: 12px 16px; width: 560px; }
+  .panel-title { color: #83769c; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .slider-row { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 160px; }
+  .slider-row label { color: #83769c; white-space: nowrap; width: 80px; }
+  .slider-row input[type=range] { flex: 1; accent-color: #ff77a8; background: transparent; cursor: pointer; }
+  .slider-row .val { color: #fff1e8; width: 36px; text-align: right; }
+  .slider-row button.reset { background: none; border: none; color: #5f574f; cursor: pointer; font-size: 11px; padding: 0 2px; }
+  .slider-row button.reset:hover { color: #ff77a8; }
+
+  select { background: #2a2a3e; border: 1px solid #5f574f; color: #fff1e8; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-family: monospace; font-size: 12px; }
+  .select-row { display: flex; align-items: center; gap: 8px; }
+  .select-row label { color: #83769c; }
+
+  #palette-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .swatch-wrap { display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+  .swatch { width: 22px; height: 22px; border-radius: 2px; border: 2px solid transparent; transition: opacity 0.15s, border-color 0.15s; }
+  .swatch.off { opacity: 0.2; }
+  .swatch.on { border-color: #fff1e8; }
+  .swatch-count { font-size: 9px; color: #5f574f; line-height: 1; }
+
+  .previews { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+  .preview-block { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .preview-block span { color: #83769c; font-size: 11px; }
+  #p8-wrap { overflow: hidden; cursor: grab; border: 1px solid #5f574f; position: relative; width: 256px; height: 256px; }
+  #p8-wrap.grabbing { cursor: grabbing; }
+  #p8-canvas { image-rendering: pixelated; position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  #orig-canvas { image-rendering: pixelated; border: 1px solid #5f574f; max-width: 256px; max-height: 256px; }
+
+  .bottom-row { display: flex; align-items: center; gap: 12px; }
+  button.primary { background: #ff77a8; color: #000; border: none; padding: 6px 16px; border-radius: 3px; cursor: pointer; font-family: monospace; font-size: 13px; font-weight: bold; }
+  button.primary:hover { background: #ff004d; }
+  button.primary:disabled { background: #5f574f; color: #83769c; cursor: default; }
+  #info { color: #5f574f; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>PICO-8 Image Converter</h1>
+
+<div id="drop-zone">
+  <strong>Drop image here</strong>
+  <span>or click to browse · or paste (⌘V)</span>
+  <input type="file" id="file-input" accept="image/*">
+</div>
+
+<!-- Fit + Dither -->
+<div class="panel">
+  <div class="panel-title">Import</div>
+  <div class="row">
+    <div class="select-row"><label>Fit:</label>
+      <select id="fit-mode">
+        <option value="cover">Cover (crop)</option>
+        <option value="contain">Contain (letterbox)</option>
+        <option value="stretch">Stretch</option>
+      </select>
+    </div>
+    <div class="select-row"><label>Dither:</label>
+      <select id="dither-mode">
+        <option value="none">None</option>
+        <option value="ordered">Ordered (Bayer)</option>
+        <option value="floyd">Floyd-Steinberg</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<!-- Adjustments -->
+<div class="panel">
+  <div class="panel-title">Adjustments</div>
+  <div class="row">
+    <div class="slider-row">
+      <label>Brightness</label>
+      <input type="range" id="brightness" min="-100" max="100" value="0">
+      <span class="val" id="brightness-val">0</span>
+      <button class="reset" data-id="brightness" data-def="0" title="Reset">↺</button>
+    </div>
+    <div class="slider-row">
+      <label>Contrast</label>
+      <input type="range" id="contrast" min="-100" max="100" value="0">
+      <span class="val" id="contrast-val">0</span>
+      <button class="reset" data-id="contrast" data-def="0" title="Reset">↺</button>
+    </div>
+    <div class="slider-row">
+      <label>Saturation</label>
+      <input type="range" id="saturation" min="-100" max="100" value="0">
+      <span class="val" id="saturation-val">0</span>
+      <button class="reset" data-id="saturation" data-def="0" title="Reset">↺</button>
+    </div>
+    <div class="slider-row">
+      <label>Hue Shift</label>
+      <input type="range" id="hue" min="-180" max="180" value="0">
+      <span class="val" id="hue-val">0</span>
+      <button class="reset" data-id="hue" data-def="0" title="Reset">↺</button>
+    </div>
+  </div>
+</div>
+
+<!-- Palette -->
+<div class="panel">
+  <div class="panel-title">Palette — click to toggle colors</div>
+  <div id="palette-toggles"></div>
+</div>
+
+<!-- Previews -->
+<div class="previews">
+  <div class="preview-block">
+    <span>Original</span>
+    <canvas id="orig-canvas"></canvas>
+  </div>
+  <div class="preview-block">
+    <span>PICO-8 128×128 — scroll to zoom, drag to pan</span>
+    <div id="p8-wrap"><canvas id="p8-canvas" width="128" height="128"></canvas></div>
+  </div>
+</div>
+
+<div class="bottom-row">
+  <button class="primary" id="download-btn" disabled>Download PNG</button>
+  <span id="info">No image loaded.</span>
+</div>
+
+<script>
+const P8_PALETTE = [
+  [0,0,0],[29,43,83],[126,37,83],[0,135,81],
+  [171,82,54],[95,87,79],[194,195,199],[255,241,232],
+  [255,0,77],[255,163,0],[255,236,39],[0,228,54],
+  [41,173,255],[131,118,156],[255,119,168],[255,204,170]
+];
+const P8_SIZE = 128;
+let enabledColors = new Array(16).fill(true);
+
+// Build palette toggles
+const palDiv = document.getElementById("palette-toggles");
+const swatchEls = [];
+P8_PALETTE.forEach(([r,g,b], i) => {
+  const wrap = document.createElement("div");
+  wrap.className = "swatch-wrap";
+  const sw = document.createElement("div");
+  sw.className = "swatch on";
+  sw.style.background = `rgb(${r},${g},${b})`;
+  sw.title = `Color ${i}`;
+  const cnt = document.createElement("div");
+  cnt.className = "swatch-count";
+  cnt.textContent = "-";
+  wrap.appendChild(sw);
+  wrap.appendChild(cnt);
+  wrap.addEventListener("click", () => {
+    enabledColors[i] = !enabledColors[i];
+    sw.classList.toggle("on", enabledColors[i]);
+    sw.classList.toggle("off", !enabledColors[i]);
+    sourceImage && convert();
+  });
+  palDiv.appendChild(wrap);
+  swatchEls.push({ sw, cnt });
+});
+
+// DOM refs
+const dropZone   = document.getElementById("drop-zone");
+const fileInput  = document.getElementById("file-input");
+const origCanvas = document.getElementById("orig-canvas");
+const p8Canvas   = document.getElementById("p8-canvas");
+const p8Wrap     = document.getElementById("p8-wrap");
+const fitMode    = document.getElementById("fit-mode");
+const ditherMode = document.getElementById("dither-mode");
+const downloadBtn= document.getElementById("download-btn");
+const info       = document.getElementById("info");
+
+// Sliders
+const sliders = ["brightness","contrast","saturation","hue"];
+const sliderEls = {};
+sliders.forEach(id => {
+  const el = document.getElementById(id);
+  const val = document.getElementById(id+"-val");
+  sliderEls[id] = el;
+  el.addEventListener("input", () => { val.textContent = el.value; sourceImage && convert(); });
+});
+document.querySelectorAll("button.reset").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const id = btn.dataset.id;
+    sliderEls[id].value = btn.dataset.def;
+    document.getElementById(id+"-val").textContent = btn.dataset.def;
+    sourceImage && convert();
+  });
+});
+
+// Input
+dropZone.addEventListener("click", () => fileInput.click());
+document.addEventListener("paste", e => {
+  const item = [...e.clipboardData.items].find(i => i.type.startsWith("image/"));
+  if (!item) return;
+  loadFile(item.getAsFile());
+});
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", e => { e.preventDefault(); dropZone.classList.remove("dragover"); loadFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", () => loadFile(fileInput.files[0]));
+fitMode.addEventListener("change", () => sourceImage && convert());
+ditherMode.addEventListener("change", () => sourceImage && convert());
+
+let sourceImage = null;
+
+function loadFile(file) {
+  if (!file || !file.type.startsWith("image/")) return;
+  const img = new Image();
+  img.onload = () => { sourceImage = img; convert(); };
+  img.src = URL.createObjectURL(file);
+}
+
+// ── Zoom / pan on p8-wrap ──
+let zoom = 2, panX = 0, panY = 0;
+let isPanning = false, panSX = 0, panSY = 0, panOX = 0, panOY = 0;
+
+function applyTransform() {
+  p8Canvas.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+}
+
+p8Wrap.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = p8Wrap.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const oldZoom = zoom;
+  zoom = Math.max(1, Math.min(16, e.deltaY < 0 ? zoom * 1.2 : zoom / 1.2));
+  panX = mx - (mx - panX) * (zoom / oldZoom);
+  panY = my - (my - panY) * (zoom / oldZoom);
+  clampPan();
+  applyTransform();
+}, { passive: false });
+
+p8Wrap.addEventListener("mousedown", e => {
+  isPanning = true; panSX = e.clientX; panSY = e.clientY; panOX = panX; panOY = panY;
+  p8Wrap.classList.add("grabbing");
+});
+window.addEventListener("mousemove", e => {
+  if (!isPanning) return;
+  panX = panOX + e.clientX - panSX;
+  panY = panOY + e.clientY - panSY;
+  clampPan();
+  applyTransform();
+});
+window.addEventListener("mouseup", () => { isPanning = false; p8Wrap.classList.remove("grabbing"); });
+
+function clampPan() {
+  const ww = p8Wrap.clientWidth, wh = p8Wrap.clientHeight;
+  const cw = P8_SIZE * zoom, ch = P8_SIZE * zoom;
+  panX = Math.min(0, Math.max(panX, ww - cw));
+  panY = Math.min(0, Math.max(panY, wh - ch));
+  if (cw < ww) panX = (ww - cw) / 2;
+  if (ch < wh) panY = (wh - ch) / 2;
+}
+
+// ── Color adjust helpers ──
+function rgbToHsl(r,g,b) {
+  r/=255; g/=255; b/=255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b);
+  let h=0,s=0,l=(max+min)/2;
+  if (max!==min) {
+    const d=max-min; s=l>0.5?d/(2-max-min):d/(max+min);
+    switch(max){ case r:h=(g-b)/d+(g<b?6:0);break; case g:h=(b-r)/d+2;break; case b:h=(r-g)/d+4;break; }
+    h/=6;
+  }
+  return [h,s,l];
+}
+function hslToRgb(h,s,l) {
+  let r,g,b;
+  if(s===0){r=g=b=l;}else{
+    const q=l<0.5?l*(1+s):l+s-l*s, p=2*l-q;
+    const hue2rgb=(p,q,t)=>{ if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<1/2)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p; };
+    r=hue2rgb(p,q,h+1/3);g=hue2rgb(p,q,h);b=hue2rgb(p,q,h-1/3);
+  }
+  return [r*255,g*255,b*255];
+}
+
+function adjustPixel(r,g,b) {
+  const bright = parseInt(sliderEls.brightness.value);
+  const cont   = parseInt(sliderEls.contrast.value);
+  const sat    = parseInt(sliderEls.saturation.value);
+  const hue    = parseInt(sliderEls.hue.value);
+
+  // brightness
+  r = Math.max(0, Math.min(255, r + bright));
+  g = Math.max(0, Math.min(255, g + bright));
+  b = Math.max(0, Math.min(255, b + bright));
+
+  // contrast: scale around 128
+  const cf = (cont + 100) / 100;
+  r = Math.max(0, Math.min(255, (r - 128) * cf + 128));
+  g = Math.max(0, Math.min(255, (g - 128) * cf + 128));
+  b = Math.max(0, Math.min(255, (b - 128) * cf + 128));
+
+  if (sat !== 0 || hue !== 0) {
+    let [h,s,l] = rgbToHsl(r,g,b);
+    if (sat !== 0) s = Math.max(0, Math.min(1, s + sat / 100));
+    if (hue !== 0) h = ((h + hue / 360) % 1 + 1) % 1;
+    [r,g,b] = hslToRgb(h,s,l);
+  }
+  return [r,g,b];
+}
+
+function nearestP8(r,g,b) {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < P8_PALETTE.length; i++) {
+    if (!enabledColors[i]) continue;
+    const [pr,pg,pb] = P8_PALETTE[i];
+    const d = (r-pr)**2 + (g-pg)**2 + (b-pb)**2;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best < 0) best = 0; // fallback if all disabled
+  return best;
+}
+
+const BAYER = [
+   0, 8, 2,10,
+  12, 4,14, 6,
+   3,11, 1, 9,
+  15, 7,13, 5
+].map(v => (v / 16 - 0.5) * 64);
+
+let lastResult = null;
+
+function convert() {
+  const fit    = fitMode.value;
+  const dither = ditherMode.value;
+  const img    = sourceImage;
+
+  // Draw original preview
+  const dispOrig = 2;
+  origCanvas.width  = Math.min(img.width  * dispOrig, 256);
+  origCanvas.height = Math.min(img.height * dispOrig, 256);
+  const octx = origCanvas.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(img, 0, 0, origCanvas.width, origCanvas.height);
+
+  // Scale to 128x128
+  const tmp = document.createElement("canvas");
+  tmp.width = P8_SIZE; tmp.height = P8_SIZE;
+  const tctx = tmp.getContext("2d");
+  tctx.fillStyle = "#000";
+  tctx.fillRect(0, 0, P8_SIZE, P8_SIZE);
+
+  const aspect = img.width / img.height;
+  let sx=0,sy=0,sw=img.width,sh=img.height;
+  let dx=0,dy=0,dw=P8_SIZE,dh=P8_SIZE;
+
+  if (fit === "cover") {
+    if (aspect > 1) { sh = img.height; sw = img.height * aspect; sx = (img.width - sw) / 2; }
+    else { sw = img.width; sh = img.width / aspect; sy = (img.height - sh) / 2; }
+  } else if (fit === "contain") {
+    if (aspect > 1) { dh = P8_SIZE / aspect; dy = (P8_SIZE - dh) / 2; }
+    else { dw = P8_SIZE * aspect; dx = (P8_SIZE - dw) / 2; }
+  }
+  tctx.imageSmoothingEnabled = true;
+  tctx.imageSmoothingQuality = "high";
+  tctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+
+  const imgData = tctx.getImageData(0, 0, P8_SIZE, P8_SIZE);
+  const d = imgData.data;
+
+  // Apply adjustments first
+  for (let i = 0; i < P8_SIZE * P8_SIZE; i++) {
+    const idx = i * 4;
+    const [r,g,b] = adjustPixel(d[idx], d[idx+1], d[idx+2]);
+    d[idx]=r; d[idx+1]=g; d[idx+2]=b;
+  }
+
+  // Dither + quantize
+  if (dither === "none") {
+    for (let i = 0; i < P8_SIZE * P8_SIZE; i++) {
+      const idx = i * 4;
+      const ci = nearestP8(d[idx], d[idx+1], d[idx+2]);
+      [d[idx],d[idx+1],d[idx+2]] = P8_PALETTE[ci];
+    }
+  } else if (dither === "ordered") {
+    for (let y = 0; y < P8_SIZE; y++) {
+      for (let x = 0; x < P8_SIZE; x++) {
+        const idx = (y * P8_SIZE + x) * 4;
+        const noise = BAYER[(y % 4) * 4 + (x % 4)];
+        const r = Math.max(0, Math.min(255, d[idx]   + noise));
+        const g = Math.max(0, Math.min(255, d[idx+1] + noise));
+        const b = Math.max(0, Math.min(255, d[idx+2] + noise));
+        const ci = nearestP8(r, g, b);
+        [d[idx],d[idx+1],d[idx+2]] = P8_PALETTE[ci];
+      }
+    }
+  } else if (dither === "floyd") {
+    const buf = new Float32Array(P8_SIZE * P8_SIZE * 3);
+    for (let i = 0; i < P8_SIZE * P8_SIZE; i++) {
+      buf[i*3]=d[i*4]; buf[i*3+1]=d[i*4+1]; buf[i*3+2]=d[i*4+2];
+    }
+    for (let y = 0; y < P8_SIZE; y++) {
+      for (let x = 0; x < P8_SIZE; x++) {
+        const i = y * P8_SIZE + x;
+        const or_=Math.max(0,Math.min(255,buf[i*3]));
+        const og =Math.max(0,Math.min(255,buf[i*3+1]));
+        const ob =Math.max(0,Math.min(255,buf[i*3+2]));
+        const ci = nearestP8(or_, og, ob);
+        const [nr,ng,nb] = P8_PALETTE[ci];
+        buf[i*3]=nr; buf[i*3+1]=ng; buf[i*3+2]=nb;
+        const er=or_-nr, eg=og-ng, eb=ob-nb;
+        for (const [nx,ny,w] of [[x+1,y,7/16],[x-1,y+1,3/16],[x,y+1,5/16],[x+1,y+1,1/16]]) {
+          if (nx<0||nx>=P8_SIZE||ny>=P8_SIZE) continue;
+          const ni=ny*P8_SIZE+nx;
+          buf[ni*3]+=er*w; buf[ni*3+1]+=eg*w; buf[ni*3+2]+=eb*w;
+        }
+      }
+    }
+    for (let i = 0; i < P8_SIZE * P8_SIZE; i++) {
+      d[i*4]=buf[i*3]; d[i*4+1]=buf[i*3+1]; d[i*4+2]=buf[i*3+2];
+    }
+  }
+
+  tctx.putImageData(imgData, 0, 0);
+  lastResult = tmp;
+
+  // Count pixels per color
+  const counts = new Array(16).fill(0);
+  for (let i = 0; i < P8_SIZE * P8_SIZE; i++) {
+    const idx = i * 4;
+    const r = d[idx], g = d[idx+1], b = d[idx+2];
+    for (let ci = 0; ci < P8_PALETTE.length; ci++) {
+      if (P8_PALETTE[ci][0]===r && P8_PALETTE[ci][1]===g && P8_PALETTE[ci][2]===b) {
+        counts[ci]++; break;
+      }
+    }
+  }
+  swatchEls.forEach(({ cnt }, i) => {
+    cnt.textContent = counts[i] > 0 ? counts[i] : "-";
+  });
+
+  // Draw into p8Canvas at 1:1 (zoom/pan handled by CSS transform)
+  const pctx = p8Canvas.getContext("2d");
+  pctx.imageSmoothingEnabled = false;
+  pctx.clearRect(0, 0, P8_SIZE, P8_SIZE);
+  pctx.drawImage(tmp, 0, 0);
+
+  // Reset zoom/pan on new image
+  zoom = 2; panX = 0; panY = 0;
+  p8Canvas.style.width  = P8_SIZE + "px";
+  p8Canvas.style.height = P8_SIZE + "px";
+  clampPan();
+  applyTransform();
+
+  info.textContent = `${img.width}×${img.height} → 128×128 | dither: ${dither} | fit: ${fit}`;
+  downloadBtn.disabled = false;
+  downloadBtn.onclick = () => {
+    const a = document.createElement("a");
+    a.download = "p8_image.png";
+    a.href = tmp.toDataURL("image/png");
+    a.click();
+  };
+}
+</script>
+</body>
+</html>
