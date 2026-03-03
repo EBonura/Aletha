@@ -103,6 +103,14 @@ body { background: #1d2b53; color: #fff; font-family: monospace; display: flex; 
           style="width:40px;background:#333;color:#fff;border:1px solid #555;padding:2px;font-family:monospace;"></label>
       </div>
       <label style="font-size:11px">Text:</label>
+      <div style="display:flex;gap:2px;margin:3px 0;">
+        <button class="glyph-btn" data-char="⬅" title="Left" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">◀</button>
+        <button class="glyph-btn" data-char="⬆" title="Up" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">▲</button>
+        <button class="glyph-btn" data-char="➡" title="Right" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">▶</button>
+        <button class="glyph-btn" data-char="⬇" title="Down" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">▼</button>
+        <button class="glyph-btn" data-char="🅾" title="O button" style="width:24px;height:22px;background:#333;color:#ff004d;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;font-weight:bold;">O</button>
+        <button class="glyph-btn" data-char="❎" title="X button" style="width:24px;height:22px;background:#333;color:#29adff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;font-weight:bold;">X</button>
+      </div>
       <textarea id="entity-text" rows="3" style="width:100%;background:#333;color:#fff;border:1px solid #555;padding:4px;font-family:monospace;font-size:11px;resize:vertical;" placeholder="Zone text (use \n for newlines)"></textarea>
     </div>
   </div>
@@ -1231,6 +1239,17 @@ document.getElementById("entity-group").addEventListener("change", () => {
     entities[selectedEntity].group = parseInt(document.getElementById("entity-group").value) || 1;
     render();
   }
+});
+document.querySelectorAll(".glyph-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const ta = document.getElementById("entity-text");
+    const ch = btn.getAttribute("data-char");
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + ch + ta.value.slice(e);
+    ta.selectionStart = ta.selectionEnd = s + ch.length;
+    ta.focus();
+    ta.dispatchEvent(new Event("input"));
+  });
 });
 document.getElementById("entity-text").addEventListener("input", () => {
   if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 8) {

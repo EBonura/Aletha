@@ -35,6 +35,7 @@ SWITCH_IDLE_PNG = os.path.join(DIR, "assets", "save", "idle 16x19.png")
 SWITCH_DOWN_PNG = os.path.join(DIR, "assets", "save", "down 16x19.png")
 TITLE_PNG = os.path.join(DIR, "assets", "title", "title.png")
 FONT_TTF = os.path.join(DIR, "assets", "fonts", "alkhemikal_src.ttf")
+FONT_PNG = os.path.join(DIR, "assets", "fonts", "font_sheet.png")
 SPIDER_DIR = os.path.join(DIR, "assets", "spider")
 SPIDER_W, SPIDER_H = 16, 16
 SPIDER_ANIMS = [
@@ -89,7 +90,8 @@ PORTAL_W, PORTAL_H = 28, PORTAL_SRC_H - 30  # 28x11
 TORCH_SRC = os.path.join(DIR, "assets", "torch", "Torch 16x16.png")
 TORCH_W, TORCH_H = 16, 16
 
-FONT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()"
+FONT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()" \
+             + chr(139) + chr(148) + chr(145) + chr(131) + chr(142) + chr(151)  # ⬅⬆➡⬇🅾❎
 TILE_SIZE = 16
 TILESET_COLS = 18
 TILESET_ROWS = 16
@@ -1043,6 +1045,65 @@ def extract_font_frames(font_path, size, chars, threshold=128):
     return frames, cell_w, cell_h, advances
 
 
+def generate_font_png(font_path, size, chars, out_path, threshold=128):
+    """Render TTF → PNG sprite sheet. Horizontal strip, one cell per char.
+    Writes cell dimensions in the filename is not needed — they're encoded
+    in the image itself (height = cell_h, width = n_chars * cell_w).
+    White pixels on black background for easy editing.
+    """
+    from PIL import ImageDraw as _ID, ImageFont as _IF
+    font = _IF.truetype(font_path, size)
+    ascent, descent = font.getmetrics()
+    cell_w = max(font.getbbox(c)[2] for c in chars if c.strip() or c == ' ')
+    cell_h = ascent + descent
+    n = len(chars)
+    sheet = Image.new("RGBA", (n * cell_w, cell_h), (0, 0, 0, 255))
+    d = _ID.Draw(sheet)
+    for i, ch in enumerate(chars):
+        bb = font.getbbox(ch)
+        d.text((i * cell_w - bb[0], 0), ch, font=font, fill=(255, 255, 255, 255))
+    # Threshold to pure black/white
+    for y in range(cell_h):
+        for x in range(sheet.width):
+            r, g, b, a = sheet.getpixel((x, y))
+            if r >= threshold:
+                sheet.putpixel((x, y), (255, 255, 255, 255))
+            else:
+                sheet.putpixel((x, y), (0, 0, 0, 255))
+    sheet.save(out_path)
+    print(f"  Font sheet: {out_path}")
+    print(f"  {n} chars, cell {cell_w}x{cell_h}, image {sheet.width}x{sheet.height}")
+    return cell_w, cell_h
+
+
+def extract_font_from_png(png_path, chars, threshold=128):
+    """Read font PNG sprite sheet → (frames, cell_w, cell_h, advances).
+    Same output format as extract_font_frames() so the rest of the pipeline
+    doesn't change.
+    """
+    img = Image.open(png_path).convert("RGBA")
+    n = len(chars)
+    cell_w = img.width // n
+    cell_h = img.height
+    frames = []
+    advances = []
+    for i in range(n):
+        ox = i * cell_w
+        pixels = []
+        max_x = 0
+        for y in range(cell_h):
+            for x in range(cell_w):
+                r, g, b, a = img.getpixel((ox + x, y))
+                if r >= threshold:
+                    pixels.append(7)
+                    max_x = max(max_x, x)
+                else:
+                    pixels.append(TRANS)
+        frames.append(pixels)
+        advances.append(max_x + 2)  # ink right edge + 1px padding
+    return frames, cell_w, cell_h, advances
+
+
 # ── GFX output ──
 
 def bytes_to_p8_str(data):
@@ -1877,8 +1938,12 @@ def build_cart():
     print(f"    title: 1 frame from {os.path.basename(TITLE_PNG)}")
 
     print("\nExtracting font frames...")
-    font_frames, font_cw, font_ch, font_adv = extract_font_frames(FONT_TTF, 13, FONT_CHARS)
-    print(f"    alkhemikal: {len(font_frames)} chars, cell {font_cw}x{font_ch}")
+    if os.path.exists(FONT_PNG):
+        font_frames, font_cw, font_ch, font_adv = extract_font_from_png(FONT_PNG, FONT_CHARS)
+        print(f"    from PNG: {len(font_frames)} chars, cell {font_cw}x{font_ch}")
+    else:
+        font_frames, font_cw, font_ch, font_adv = extract_font_frames(FONT_TTF, 13, FONT_CHARS)
+        print(f"    from TTF: {len(font_frames)} chars, cell {font_cw}x{font_ch}")
 
     print("\nCompressing entity animations...")
     ent_anim_info = [
@@ -2485,8 +2550,18 @@ def build_cart():
     gen_lines.append(f"sfx_confirm={6+sfx_shift}")
     # font lookup table: char code -> frame index (1-based)
     # font_map: build from character string (saves ~270 tokens vs explicit table)
-    # Escape ' inside the Lua string since we use single quotes
-    fc_escaped = FONT_CHARS.replace("'", "\\'")
+    # Escape high-byte chars as \ddd for PICO-8, and ' since we use single quotes
+    fc_escaped = ""
+    for c in FONT_CHARS:
+        o = ord(c)
+        if o >= 128:
+            fc_escaped += f"\\{o:03d}"
+        elif c == "'":
+            fc_escaped += "\\'"
+        elif c == "\\":
+            fc_escaped += "\\\\"
+        else:
+            fc_escaped += c
     gen_lines.append(f"_fc='{fc_escaped}'")
     gen_lines.append("font_map={} for i=1,#_fc do font_map[ord(sub(_fc,i,i))]=i end")
 
@@ -2516,8 +2591,48 @@ def build_cart():
         with open(LEVEL_JSON) as f:
             ld = json.load(f)
         zone_texts = ld.get("texts", [])
+    # Unicode → P8SCII mapping for button glyphs
+    GLYPH_MAP = {
+        # Proper Unicode emoji (from new editor buttons)
+        "\u2b05": 139,  # ⬅ left
+        "\u2b06": 148,  # ⬆ up
+        "\u27a1": 145,  # ➡ right
+        "\u2b07": 131,  # ⬇ down
+        "\U0001f17e": 142,  # 🅾 O button
+        "\u274e": 151,  # ❎ X button
+        # Windows-1252 artifacts (from old HTML &#nnn; entities via browser)
+        "\u2039": 139,  # ‹ → left
+        "\u201c": 148,  # " → up  (note: 148 in cp1252 = U+201C)
+        "\u2018": 145,  # ' → right (145 in cp1252 = U+2018)
+        "\u201d": 148,  # " → up (alternate)
+        "\u0192": 131,  # ƒ → down (131 in cp1252 = U+0192)
+        "\u017d": 142,  # Ž → O button (142 in cp1252 = U+017D)
+        "\u2014": 151,  # — → X button (151 in cp1252 = U+2014)
+    }
+    # Also handle emoji variation selector (⬅️ vs ⬅)
+    def glyph_sub(t):
+        t = t.replace("\ufe0f", "")  # strip variation selector 16
+        for uc, p8 in GLYPH_MAP.items():
+            t = t.replace(uc, chr(p8))
+        return t
     if zone_texts:
-        escaped = [t.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") for t in zone_texts]
+        zone_texts = [glyph_sub(t) for t in zone_texts]
+        def zt_escape(t):
+            out = ""
+            for c in t:
+                o = ord(c)
+                if o >= 128:
+                    out += f"\\{o:03d}"
+                elif c == "\\":
+                    out += "\\\\"
+                elif c == '"':
+                    out += '\\"'
+                elif c == "\n":
+                    out += "\\n"
+                else:
+                    out += c
+            return out
+        escaped = [zt_escape(t) for t in zone_texts]
         txt_entries = ",".join(f'"{t}"' for t in escaped)
         gen_lines.append(f"_zt={{{txt_entries}}}")
         print(f"\n  Zone texts: {len(zone_texts)} entries")
@@ -3303,7 +3418,12 @@ __lua__
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "spider_test":
+    if len(sys.argv) > 1 and sys.argv[1] == "font-gen":
+        print("Generating font sprite sheet from TTF...")
+        generate_font_png(FONT_TTF, 13, FONT_CHARS, FONT_PNG)
+        print(f"\nEdit {FONT_PNG} to add/modify glyphs.")
+        print("Then run 'make build' to use the modified font.")
+    elif len(sys.argv) > 1 and sys.argv[1] == "spider_test":
         build_spider_test()
     elif len(sys.argv) > 1 and sys.argv[1] == "wheelbot_test":
         build_wheelbot_test()
