@@ -189,7 +189,7 @@ textarea { border-radius: 4px; }
 <body>
 
 <div id="sidebar">
-  <h2><button class="pal-tab active" data-tab="main">Tiles</button><button class="pal-tab" data-tab="bg">BG</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button> <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
+  <h2><button class="pal-tab" data-tab="bg" data-layer="0">BG1</button><button class="pal-tab active" data-tab="main" data-layer="1">Main</button><button class="pal-tab" data-tab="main" data-layer="2">BG2</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button> <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
   <div id="palette"></div>
   <div id="band-editor">
     <h3>Color Remap</h3>
@@ -860,14 +860,17 @@ function updateLayerUI() {
   });
 }
 function switchPaletteTab(tab) {
-  if (tab === activePalette) return;
+  const changed = tab !== activePalette;
   activePalette = tab;
-  selectedTiles = [0];
-  lastClickedTile = 0;
-  if (placementMode !== "single") setPlacementMode("single");
-  document.querySelectorAll(".pal-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  buildPalette();
-  buildBandEditor();
+  if (changed) {
+    selectedTiles = [0];
+    lastClickedTile = 0;
+    if (placementMode !== "single") setPlacementMode("single");
+    buildPalette();
+    buildBandEditor();
+  }
+  // Highlight tab matching current layer
+  document.querySelectorAll(".pal-tab").forEach(b => b.classList.toggle("active", parseInt(b.dataset.layer) === curLayer));
 }
 
 function loadTileImages(cb) {
@@ -2122,10 +2125,7 @@ document.querySelectorAll(".parallax-input").forEach(inp => {
 
 document.querySelectorAll(".pal-tab").forEach(b => {
   b.addEventListener("click", () => {
-    const tab = b.dataset.tab;
-    switchPaletteTab(tab);
-    // Also switch to the matching layer
-    switchLayer(tab === "bg" ? 0 : 1);
+    switchLayer(parseInt(b.dataset.layer));
   });
 });
 
