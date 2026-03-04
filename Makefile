@@ -1,5 +1,5 @@
 build:
-	python3 build.py
+	cargo run --release --manifest-path tools/build-cart/Cargo.toml
 
 count:
 	python3 count_tokens.py

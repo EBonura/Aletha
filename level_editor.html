@@ -717,6 +717,13 @@ function _extractLum(tiles, images) {
 function extractTileLuminance() {
   tileLum = _extractLum(TILES, tileImages);
   bgTileLum = _extractLum(BG_TILES, bgTileImages);
+  // Rows 0-5 use inverted alpha in PNG — flip so editor colors the shapes
+  BG_TILES.forEach((t, i) => {
+    const m = t.name.match(/BG_(\d+)_(\d+)/);
+    if (m && parseInt(m[1]) <= 5) {
+      bgTileLum[i] = bgTileLum[i].map(p => p.a === 0 ? {lum:100, a:255} : {lum:p.lum, a:0});
+    }
+  });
 }
 
 function lumToBand(lum) {

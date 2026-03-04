@@ -354,8 +354,29 @@ function load_tiles()
  p+=pk2(map_base+10)
  for L=1,nl do
   local lsz=pk2(map_base+10+L*2)
-  local lbpp=peek(p)
-  mdat[L]=decode_eg2(p+1,sz,lbpp,lvl_w)
+  if peek(p)==0xff then
+   local bw,bh,ox,oy=peek(p+1,4)
+   local nb=pk2(p+5) local bds=pk2(p+7) local np=peek(p+9)
+   local pp=p+10
+   local pal if np>0 then pal={} for i=0,np-1 do pal[i]=peek(pp+i) end end pp+=np
+   local bd=decode_eg2(pp+1,nb*bw*bh,peek(pp),bw) pp+=bds
+   if pal then for i=1,#bd do bd[i]=pal[bd[i]] end end
+   local mw=(lvl_w+ox+bw-1)\bw local mh=(lvl_h+oy+bh-1)\bh
+   local mm=decode_eg2(pp+1,mw*mh,peek(pp),mw)
+   local d={} for i=1,sz do d[i]=0 end
+   for mi=0,mw*mh-1 do
+    local bi=mm[mi+1]*bw*bh local mx=mi%mw*bw-ox local my=mi\mw*bh-oy
+    for dy=0,bh-1 do for dx=0,bw-1 do
+     local y,x=my+dy,mx+dx
+     if y>=0 and y<lvl_h and x>=0 and x<lvl_w then
+      d[y*lvl_w+x+1]=bd[bi+dy*bw+dx+1]
+     end
+    end end
+   end
+   mdat[L]=d
+  else
+   mdat[L]=decode_eg2(p+1,sz,peek(p),lvl_w)
+  end
   if L~=2 then for i=1,sz do mdat[L][i]*=4 end end
   p+=lsz
  end
@@ -605,19 +626,16 @@ function check_attacks()
   if t==4 then
    if h(e.x,e.y,8) then e.lit,e.frame=false,7
     local p=mkp(e.x+8,e.y+8,1) p.cl=8 p.vx=rnd(1)-.5 p.vy=rnd(1)-.5 end
-  elseif t==6 and e.hp>0
-   and e.state~="death" and e.inv_t==0 then
-   if h(e.x,e.y,0) then
-    ent_hurt(e,e.da,e.ha)
-   end
-  elseif t>=7 and e.hp>0
-   and e.state~="death" and e.state~="sleep"
-   and (t~=7 or e.state~="fdash") and e.inv_t==0 then
-   local wb=t==7
-   local hw=wb and 14 or 15
-   if ax1>e.x-hw and ax0<e.x+hw
-    and ay1>e.y-(wb and 24 or 28) and ay0<e.y then
-    ent_hurt(e,e.da,e.ha)
+  elseif t>=6 and e.hp>0 and e.state~="death" and e.inv_t==0 then
+   if t==6 then
+    if h(e.x,e.y,0) then ent_hurt(e,e.da,e.ha) end
+   elseif e.state~="sleep" and (t~=7 or e.state~="fdash") then
+    local wb=t==7
+    local hw=wb and 14 or 15
+    if ax1>e.x-hw and ax0<e.x+hw
+     and ay1>e.y-(wb and 24 or 28) and ay0<e.y then
+     ent_hurt(e,e.da,e.ha)
+    end
    end
   end
  end
@@ -696,19 +714,20 @@ function init_ents()
    e.da,e.ha=a_wbdt,a_wbd
    e.wka=a_wbwk
   elseif t==8 then init_bot(e,a_hbi,5)
-   e.ia,e.wa,e.ws=a_hbi,a_hbr,0.8
-   e.sa,e.scd,e.spt=a_hbs,90,30
-   e.fx,e.fy,e.fs=0,-14,2
-   e.dr,e.dyr,e.dyo=90,32,11
+   e.ia,e.wa=a_hbi,a_hbr
+   e.sa,e.dr,e.dyr=a_hbs,90,32
    e.da,e.ha=a_hbd,a_hbh
    e.aa,e.ca=a_hba,a_hbr
   elseif t==9 then init_bot(e,a_bki,10)
-   e.ia,e.wa,e.ws=a_bki,a_bkr,0.8
-   e.sa,e.scd,e.spt=a_bka,90,30
-   e.fx,e.fy,e.fs=0,-14,2
-   e.dr,e.dyr,e.dyo=100,40,11
+   e.ia,e.wa=a_bki,a_bkr
+   e.sa,e.dr,e.dyr=a_bka,100,40
    e.da,e.ha=a_bkd,a_bkh
    e.aa,e.ca=a_bka,a_bkc
+  end
+  if t>=8 then
+   e.ws,e.scd,e.spt=0.8,90,30
+   e.fx,e.fy,e.fs=0,-14,2
+   e.dyo=11
   end
  end
 end
@@ -840,6 +859,7 @@ function step_spider(e)
 end
 
 function wb_move(e)
+ if e.type==6 then return end
  if not e.grounded then
   e.vy=min(e.vy+0.15,3)
  end
@@ -883,7 +903,7 @@ function update_enemy(e)
  if s=="death" then
   local t,nf=ent_tick(e,spd)
   if t then af(e,nf) end
-  if e.type~=6 then wb_move(e) end
+  wb_move(e)
   return
  end
  tc(e)
@@ -969,7 +989,7 @@ function update_enemy(e)
       sp_set_anim(e,e.ca,"charge")
      end
     end
-    if e.type~=6 then wb_move(e) end
+    wb_move(e)
     return
    end
   end
@@ -980,12 +1000,12 @@ function update_enemy(e)
    end
   elseif s=="walk" then
    if e.patrol_t<=0 then
-    if e.type~=6 then e.vx=0 end
+    e.vx=0
     go_idle(e,e.ia,60)
    end
   end
  end
- if e.type~=6 then wb_move(e) end
+ wb_move(e)
 end
 
 function update_sprojs()
@@ -1240,7 +1260,9 @@ function _update60()
 
  elseif s=="jump" then
   air_control(lr)
-  if ba then
+  if buf_sweep>0 then
+   start_sweep() air_atk=true
+  elseif buf_atk>0 then
    start_air_atk()
   elseif vy>=0 then
    set_anim(a_fall,"fall")
@@ -1248,7 +1270,9 @@ function _update60()
 
  elseif s=="fall" then
   air_control(lr)
-  if ba then
+  if buf_sweep>0 then
+   start_sweep() air_atk=true
+  elseif buf_atk>0 then
    start_air_atk()
   elseif grounded then
    -- check buffers before landing
@@ -1410,7 +1434,7 @@ function _draw()
    else circfill(qx,qy,2,8) circfill(qx-1,qy-1,1,14) end
   end
   draw_hp()
-  print(gems,2,hp_h+4,8)
+  p8print(""..gems,2,hp_h+4,8)
   if near_ent then
    local c=near_ent.cost
    text_box(c>0 and "\131 "..c or "\131",near_ent.x-cam_x,near_ent.y-20-cam_y,gems>=c and 7 or 8)
