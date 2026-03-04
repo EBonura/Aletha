@@ -350,12 +350,23 @@ function load_tiles()
  local p=map_base+12+nl*2
  local tbpp=peek(p)
  local tnp=1<<tbpp
- local tpal={}
+ local tpal,bpal={},{}
  for i=0,tnp-1 do
   local tb=peek(p+1+i\2)
-  tpal[i]=i%2==0 and (tb>>4)&0xf or tb&0xf
+  local c=i%2==0 and(tb>>4)&0xf or tb&0xf
+  tpal[i]=c bpal[i]=c==trans and lvl_bg or c
  end
- local all_idx=decode_eg2(p+1+tnp\2,nt*256,tbpp,16)
+ local sp=p+1+tnp\2 local ss=pk2(sp) sp+=2
+ local function wt(off,n,pal,bg)
+  local b=decode_eg2(off,n*256,tbpp,16) local ai=1
+  for t=0,n-1 do for py=0,15 do
+   local d=bg and 0x8000+t*128+py*8 or(t\8*16+py)*64+t%8*8
+   for px=0,7 do
+    poke(d+px,(pal[b[ai]]&0xf)|(pal[b[ai+1]]&0xf)<<4) ai+=2
+   end
+  end end
+ end
+ wt(sp,lvl_nst,tpal) wt(sp+ss,nt-lvl_nst,bpal,1)
  p+=pk2(map_base+10)
  for L=1,nl do
   local lsz=pk2(map_base+10+L*2)
@@ -377,28 +388,6 @@ function load_tiles()
   ent_grp[d]=ent_grp[d] or {}
   add(ent_grp[d],#ents)
  end
- for t=0,nt-1 do
-  local bg=t>=lvl_nst
-  for py=0,15 do
-   local dst
-   if bg then
-    dst=0x8000+(t-lvl_nst)*128+py*8
-   else
-    dst=(t\8*16+py)*64+t%8*8
-   end
-   for px=0,7 do
-    local i=t*256+py*16+px*2
-    local lo=tpal[all_idx[i+1]]&0xf
-    local hi=tpal[all_idx[i+2]]&0xf
-    if bg then
-     if lo==trans then lo=1 end
-     if hi==trans then hi=1 end
-    end
-    poke(dst+px,lo|(hi<<4))
-   end
-  end
- end
- all_idx=nil
 end
 
 function thi(v) return (v-1)\16 end
@@ -477,15 +466,15 @@ function draw_mem_layer(L)
    local c=md[ty*lvl_w+tx+1]
    if c>0 then
     local sx,sy,src=tx*16-cx,ty*16-cy,0x8000+(c-lvl_nst-1)*128
-    local x0=max(0,-sx\2)
-    local x1=min(7,(127-sx)\2)
-    if x1>=x0 then
-     local w=x1-x0+1
-     for py=0,15 do
-      local dy=sy+py
-      if dy>=0 and dy<128 then
-       memcpy(0x6000+dy*64+sx\2+x0,
-        src+py*8+x0,w)
+    for py=0,15 do
+     local dy=sy+py
+     if dy>=0 and dy<128 then
+      for j=0,7 do
+       local dx=sx\2+j
+       if dx>=0 and dx<64 then
+        local s=@(src+py*8+j)
+        if s~=bgb then poke(0x6000+dy*64+dx,s) end
+       end
       end
      end
     end
@@ -1471,9 +1460,9 @@ function _draw()
    text_box("press x",64,82,bc)
   end
  else
-  cls(1)
-  draw_mem_layer(1)
+  cls(lvl_bg)
   draw_mem_layer(3)
+  draw_mem_layer(1)
   draw_main_layer()
   draw_ents()
   draw_sprojs()

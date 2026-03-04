@@ -1308,7 +1308,8 @@ def extract_horiz_frames(png_path, src_fw, src_fh, cell_w, cell_h, nframes=None,
 def read_level_json(json_path):
     """Read level data from level_data.json.
     Returns (map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, flags, band_colors, parallax)
-    where map_grids[layer][y][x] = tile_index (255=empty), xform_grids[layer][y][x] = packed xform.
+    where map_grids[layer][y][x] = unified_tile_index (255=empty), xform_grids[layer][y][x] = packed xform.
+    Unified indices: 0..main_count-1 = main tiles, main_count.. = BG tiles.
     3 layers: 0=BG1, 1=Main, 2=BG2."""
     with open(json_path) as f:
         data = json.load(f)
@@ -1320,6 +1321,8 @@ def read_level_json(json_path):
     h = data["height"]
     sx = data.get("spawnX", -1)
     sy = data.get("spawnY", -1)
+    # Count main tiles from the tiles list
+    main_count = len(data.get("tiles", []))
 
     def parse_grid(rows):
         return [[int(v) for v in row] for row in rows]
@@ -1339,8 +1342,18 @@ def read_level_json(json_path):
         # Keep up to 3 layers (BG, Main, FG)
         map_grids = map_grids[:3]
         xform_grids = xform_grids[:3]
-        # v2→v3 migration: if no bgTiles field, BG layer had main tileset indices — clear it
-        if "bgTiles" not in data and data.get("version", 2) < 3:
+
+        version = data.get("version", 2)
+        if version >= 4:
+            pass  # v4: already unified indices
+        elif version >= 3 or "bgTiles" in data:
+            # v3: layer 0 uses local BG tile indices — offset by main_count
+            for y in range(len(map_grids[0])):
+                for x in range(len(map_grids[0][y])):
+                    if map_grids[0][y][x] != 255:
+                        map_grids[0][y][x] += main_count
+        else:
+            # v2: BG layer had main tileset indices — clear it
             map_grids[0] = empty_grid()
             xform_grids[0] = zero_grid()
     else:
@@ -1376,8 +1389,9 @@ def read_level_json(json_path):
             parallax[i] = v
 
     entities = data.get("entities", [])
+    map_bg_color = data.get("mapBgColor", 1)
 
-    return w, h, map_grids, xform_grids, sx, sy, flags, band_colors, bg_band_colors, parallax, entities
+    return w, h, map_grids, xform_grids, sx, sy, flags, band_colors, bg_band_colors, parallax, entities, map_bg_color
 
 
 ## -- Map layer encoding modes --
@@ -1516,25 +1530,38 @@ def build_level_data(tileset, bg_tileset, map_data):
         tile_flags: dict of runtime_tile_id -> flag byte
         gen_lines: list of Lua code lines for generated block
     """
-    map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, editor_flags, band_colors, bg_band_colors, parallax, entities = map_data
+    map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, editor_flags, band_colors, bg_band_colors, parallax, entities, map_bg_color = map_data
     num_layers = len(map_grids)
-    # Layer 0 = BG1 (bg_tileset), Layer 1 = Main (tileset), Layer 2 = BG2 (tileset)
-    layer_tilesets = [bg_tileset, tileset, tileset]
+    main_count = len(tileset)
+
+    # Unified tileset: indices 0..main_count-1 = main, main_count.. = BG
+    # Look up tile image by unified index
+    def get_tile(uni):
+        if uni < main_count:
+            return tileset[uni]
+        else:
+            return bg_tileset[uni - main_count]
+
+    def is_bg_tile(uni):
+        return uni >= main_count
 
     # Use band colors from level data if available
     global BAND_COLORS
     if band_colors and len(band_colors) == len(BAND_COLORS):
         BAND_COLORS = band_colors
     BG_BAND_COLORS = list(bg_band_colors) if bg_band_colors and len(bg_band_colors) == len(BAND_COLORS) else list(BAND_COLORS)
-    layer_band_colors = [BG_BAND_COLORS, BAND_COLORS, BAND_COLORS]  # layer 0=BG1, 1=Main, 2=BG2
+    # Band colors for a tile depend on the tile's source tileset
+    def band_colors_for_tile(uni):
+        return BG_BAND_COLORS if is_bg_tile(uni) else BAND_COLORS
 
     print(f"\n=== LEVEL DATA ===")
     print(f"  Map size: {map_w}x{map_h} ({map_w*map_h} cells), {num_layers} layers")
     print(f"  Spawn: ({spawn_x}, {spawn_y})")
+    print(f"  Unified tileset: {main_count} main + {len(bg_tileset)} BG tiles")
 
     # Step 1: Collect used tiles per layer
-    # Main layer: split by rotation (base vs rot90) — flips encoded at runtime
-    # BG layers: collect (tile_id, xform) pairs — all transforms baked into variants
+    # Main layer (1): split by rotation (base vs rot90) — flips encoded at runtime
+    # BG layers (0,2): collect (tile_id, xform) pairs — all transforms baked into variants
     used_base = [set() for _ in range(num_layers)]
     used_rot90 = [set() for _ in range(num_layers)]
     bg_used = [set() for _ in range(num_layers)]  # sets of (ti, xf) for BG layers
@@ -1579,14 +1606,14 @@ def build_level_data(tileset, bg_tileset, map_data):
 
     # Process main layer (1) first → sprite sheet tiles (max 64).
     def process_main_tiles():
-        ts = layer_tilesets[1]
         all_used = sorted(used_base[1] | used_rot90[1])
         for ti in all_used:
-            if ti >= len(ts):
-                print(f"  WARNING: main layer tile index {ti} out of range (tileset has {len(ts)}), skipping")
+            try:
+                name, tile_img = get_tile(ti)
+            except IndexError:
+                print(f"  WARNING: main layer tile index {ti} out of range, skipping")
                 continue
-            name, tile_img = ts[ti]
-            base_pixels = remap_tile_colors(tile_img, layer_band_colors[1])
+            base_pixels = remap_tile_colors(tile_img, band_colors_for_tile(ti))
             if ti in used_base[1]:
                 rt_id = add_rt_tile(base_pixels)
                 main_base_rt[ti] = rt_id
@@ -1599,13 +1626,13 @@ def build_level_data(tileset, bg_tileset, map_data):
 
     # Process BG layers → user memory tiles (all transforms baked in).
     def process_bg_tiles(L):
-        ts = layer_tilesets[L]
         for ti, xf in sorted(bg_used[L]):
-            if ti >= len(ts):
-                print(f"  WARNING: layer {L} tile index {ti} out of range (tileset has {len(ts)}), skipping")
+            try:
+                name, tile_img = get_tile(ti)
+            except IndexError:
+                print(f"  WARNING: layer {L} tile index {ti} out of range, skipping")
                 continue
-            name, tile_img = ts[ti]
-            base_pixels = remap_tile_colors(tile_img, layer_band_colors[L])
+            base_pixels = remap_tile_colors(tile_img, band_colors_for_tile(ti))
             rot = xf & 3
             hflip = bool(xf & 4)
             vflip = bool(xf & 8)
@@ -1661,16 +1688,16 @@ def build_level_data(tileset, bg_tileset, map_data):
             fy = int(vflip)
         return (rt_id << 2) | (fx << 1) | fy
 
-    # Step 3: EG-2 compress all tile pixels as single blob at reduced bpp
+    # Step 3: EG-2 compress tile pixels as TWO blobs (sprite + BG)
+    # to avoid PICO-8 16.16 overflow when total pixels > 32767
     all_pixels = []
     for pixels in rt_tiles:
         all_pixels.extend(pixels)
     raw_size = num_rt * 128
 
-    # Build tile palette and quantize
+    # Build shared tile palette and quantize
     tile_colors = sorted(set(all_pixels))
     tile_bpp = max(1, tile_colors[-1].bit_length()) if tile_colors else 4
-    # Find minimum bpp that fits the palette
     for bpp_try in [1, 2, 3, 4]:
         if (1 << bpp_try) >= len(tile_colors):
             tile_bpp = bpp_try
@@ -1679,19 +1706,28 @@ def build_level_data(tileset, bg_tileset, map_data):
     tile_pal_map = {c: i for i, c in enumerate(tile_colors)}
     quantized = [tile_pal_map[c] for c in all_pixels]
 
-    # Encode as single EG-2 frame (tiles stacked vertically: 16 wide)
-    tile_w = 16
-    tile_h = 16 * num_rt
-    tile_eg2, tile_mode, tile_order = _eg2_encode_frame(quantized, tile_bpp, tile_w, tile_h)
+    # Split into sprite pixels and BG pixels
+    spr_npix = num_spr_tiles * 256  # 16x16 = 256 pixels per tile
+    spr_q = quantized[:spr_npix]
+    bg_q = quantized[spr_npix:]
 
-    # Pack: [bpp] [npal_hi:npal_lo packed nibbles...] [eg2 data]
+    # Encode sprite tiles EG-2
+    spr_eg2, _, _ = _eg2_encode_frame(spr_q, tile_bpp, 16, 16 * num_spr_tiles) if spr_q else (b'', 0, 0)
+    # Encode BG tiles EG-2
+    num_bg_rt = num_rt - num_spr_tiles
+    bg_eg2, _, _ = _eg2_encode_frame(bg_q, tile_bpp, 16, 16 * num_bg_rt) if bg_q else (b'', 0, 0)
+
+    # Pack: [bpp] [palette nibbles...] [spr_eg2_size: u16 LE] [spr_eg2] [bg_eg2]
     tile_blob = bytearray()
     tile_blob.append(tile_bpp)
     tile_blob.extend(pack_palette(tile_pal))
-    tile_blob.extend(tile_eg2)
+    tile_blob.append(len(spr_eg2) & 0xFF)
+    tile_blob.append((len(spr_eg2) >> 8) & 0xFF)
+    tile_blob.extend(spr_eg2)
+    tile_blob.extend(bg_eg2)
 
     print(f"  Tile pixels: {len(tile_blob)}b EG-2 {tile_bpp}bpp"
-          f" (from {raw_size}b, {len(tile_blob)*100//raw_size}%)"
+          f" (spr:{len(spr_eg2)}b + bg:{len(bg_eg2)}b, from {raw_size}b)"
           f" pal={tile_pal}")
 
     # Step 4: Build cell grids, then auto-encode each layer
@@ -1777,7 +1813,8 @@ def build_level_data(tileset, bg_tileset, map_data):
     gen.append(f"-- level: {map_w}x{map_h}, {num_rt} tiles, {num_layers} layers, {total_bytes}b")
     gen.append(f"map_base=0")  # placeholder, overwritten by allocator
     gen.append(f"lvl_w={map_w} lvl_h={map_h}")
-    gen.append(f"lvl_nt={num_rt} lvl_nl={num_layers} lvl_nst={num_spr_tiles}")
+    bgb = map_bg_color | (map_bg_color << 4)
+    gen.append(f"lvl_nt={num_rt} lvl_nl={num_layers} lvl_nst={num_spr_tiles} lvl_bg={map_bg_color} bgb={bgb}")
     if spawn_x >= 0:
         gen.append(f"spn_x={spawn_x} spn_y={spawn_y}")
     else:

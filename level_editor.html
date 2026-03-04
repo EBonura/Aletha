@@ -189,7 +189,7 @@ textarea { border-radius: 4px; }
 <body>
 
 <div id="sidebar">
-  <h2><button class="pal-tab" data-tab="bg" data-layer="0">BG1</button><button class="pal-tab active" data-tab="main" data-layer="1">Main</button><button class="pal-tab" data-tab="main" data-layer="2">BG2</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button> <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
+  <h2><button class="pal-tab" data-layer="0">BG1</button><button class="pal-tab active" data-layer="1">Main</button><button class="pal-tab" data-layer="2">BG2</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button> <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
   <div id="palette"></div>
   <div id="band-editor">
     <h3>Color Remap</h3>
@@ -420,7 +420,7 @@ let tileImages = [];
 let bgTileImages = [];
 let bgTileLum = [];
 let bgRemappedImages = [];
-let activePalette = "main"; // "main" or "bg"
+// activePalette removed — unified tileset, all tiles visible at once
 let mapBgColor = 1; // P8 color index for map canvas background
 let palTileSize = 40;
 let selection = null;       // {x, y, w, h} in tile coords, or null
@@ -485,9 +485,10 @@ function getRandomTile() { return selectedTiles[Math.floor(Math.random() * selec
 function getTileForPlacement() { if (placementMode === "random" && selectedTiles.length > 1) return getRandomTile(); return getSelectedTile(); }
 function getStampTiles() {
   if (selectedTiles.length <= 1) return [{dx:0, dy:0, idx: getSelectedTile()}];
-  const curTiles = activePalette === "bg" ? BG_TILES : TILES;
-  const re = activePalette === "bg" ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
-  const positions = selectedTiles.map(i => { const m = curTiles[i].name.match(re); return m ? {r: parseInt(m[1]), c: parseInt(m[2]), idx: i} : null; }).filter(Boolean);
+  const positions = selectedTiles.map(uni => {
+    const pos = tileGridPos(uni);
+    return pos ? {r: pos.r, c: pos.c, idx: uni} : null;
+  }).filter(Boolean);
   if (!positions.length) return [{dx:0, dy:0, idx: getSelectedTile()}];
   const minR = Math.min(...positions.map(p=>p.r)), minC = Math.min(...positions.map(p=>p.c));
   return positions.map(p => ({dx: p.c - minC, dy: p.r - minR, idx: p.idx}));
@@ -500,11 +501,16 @@ function updateModeButtons() {
   document.getElementById("mode-stamp").classList.toggle("mode-btn-disabled", !multi);
 }
 function setPlacementMode(m) { placementMode = m; updateModeButtons(); document.getElementById("st-mode").textContent = "Mode: " + m; }
-// Tileset helpers: return the correct tileset arrays for a given layer
-function tilesetForLayer(L) { return L === 0 ? BG_TILES : TILES; }
-function imagesForLayer(L) { return L === 0 ? bgRemappedImages : remappedImages; }
-function rawImagesForLayer(L) { return L === 0 ? bgTileImages : tileImages; }
-function paletteForLayer(L) { return L === 0 ? "bg" : "main"; }
+// Unified tileset: indices 0..MAIN_COUNT-1 = main tiles, MAIN_COUNT..TOTAL-1 = BG tiles
+let MAIN_COUNT = 0; // set after tiles load
+function isBgTile(idx) { return idx >= MAIN_COUNT; }
+function srcTileInfo(idx) { return isBgTile(idx) ? BG_TILES[idx - MAIN_COUNT] : TILES[idx]; }
+function srcRawImage(idx) { return isBgTile(idx) ? bgTileImages[idx - MAIN_COUNT] : tileImages[idx]; }
+function srcLum(idx) { return isBgTile(idx) ? bgTileLum[idx - MAIN_COUNT] : tileLum[idx]; }
+// Per-layer remapped images (all tiles remapped with that layer's band colors)
+let layerRemapped = [[], [], []]; // layerRemapped[L][unifiedIdx] = canvas
+function imagesForLayer(L) { return layerRemapped[L]; }
+function rawImagesForLayer(L) { return layerRemapped[L]; } // fallback to remapped
 function updateXformStatus() {
   const parts = [];
   if (curRotation > 0) parts.push(curRotation * 90 + "\u00b0");
@@ -720,10 +726,15 @@ function _remapTiles(tiles, lumArr, colors) {
 function remapAllTiles() {
   remappedImages = _remapTiles(TILES, tileLum, bandColors);
   bgRemappedImages = _remapTiles(BG_TILES, bgTileLum, bgBandColors);
+  // Unified per-layer remaps: each tile uses its source tileset's band colors
+  const unified = [...remappedImages, ...bgRemappedImages];
+  for (let L = 0; L < NUM_LAYERS; L++) {
+    layerRemapped[L] = unified;
+  }
 }
 
 function refreshPaletteTiles() {
-  const imgs = activePalette === "bg" ? bgRemappedImages : remappedImages;
+  const imgs = layerRemapped[curLayer];
   document.querySelectorAll(".tile-btn").forEach(b => {
     const idx = parseInt(b.dataset.idx);
     const cv = b.querySelector("canvas");
@@ -752,12 +763,11 @@ const BG_COLOR_ROWS = [
 function buildBandEditor() {
   const container = document.getElementById("band-rows");
   container.innerHTML = "";
-  const isBg = activePalette === "bg";
-  if (isBg) {
-    buildBgColorEditor(container);
-    return;
-  }
-  // FG band editor (unchanged)
+  // Main tile band colors
+  const mainHdr = document.createElement("div"); mainHdr.className = "band-label";
+  mainHdr.style.cssText = "font-weight:bold;margin:6px 0 2px;";
+  mainHdr.textContent = "Main Tiles";
+  container.appendChild(mainHdr);
   BANDS.forEach((band, bi) => {
     const row = document.createElement("div"); row.className = "band-row";
     const label = document.createElement("div"); label.className = "band-label";
@@ -784,6 +794,8 @@ function buildBandEditor() {
     row.appendChild(colors);
     container.appendChild(row);
   });
+  // BG tile colors + map background
+  buildBgColorEditor(container);
 }
 
 function buildBgColorEditor(container) {
@@ -850,26 +862,18 @@ function switchLayer(L) {
   curLayer = L;
   map = layers[L].map;
   mapXform = layers[L].xform;
-  switchPaletteTab(paletteForLayer(L));
   updateLayerUI();
+  refreshPaletteTiles();
+  buildBandEditor();
   render();
 }
 function updateLayerUI() {
   document.querySelectorAll(".layer-row").forEach(r => {
     r.classList.toggle("active", parseInt(r.dataset.layer) === curLayer);
   });
+  updatePaletteTabs();
 }
-function switchPaletteTab(tab) {
-  const changed = tab !== activePalette;
-  activePalette = tab;
-  if (changed) {
-    selectedTiles = [0];
-    lastClickedTile = 0;
-    if (placementMode !== "single") setPlacementMode("single");
-    buildPalette();
-    buildBandEditor();
-  }
-  // Highlight tab matching current layer
+function updatePaletteTabs() {
   document.querySelectorAll(".pal-tab").forEach(b => b.classList.toggle("active", parseInt(b.dataset.layer) === curLayer));
 }
 
@@ -891,98 +895,105 @@ function loadTileImages(cb) {
   });
 }
 
-// Palette
+// Palette — unified: main tiles then BG tiles, all visible at once
 function buildPalette() {
   const pal = document.getElementById("palette");
   pal.innerHTML = "";
-  if (activePalette === "bg") {
-    buildBGPalette(pal);
-  } else {
-    buildMainPalette(pal);
-  }
-}
-function buildMainPalette(pal) {
-  const posMap = {};
-  TILES.forEach((t, i) => { const m = t.name.match(/T_(\d+)_(\d+)/); if (m) posMap[m[1]+"_"+m[2]] = i; });
-  const COLS = 18, ROWS = 16;
-  const grid = document.createElement("div"); grid.className = "tile-grid";
-  grid.style.gridTemplateColumns = `repeat(${COLS}, ${palTileSize}px)`;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  const imgs = layerRemapped[curLayer];
+  // Main tiles grid
+  const mainPosMap = {};
+  TILES.forEach((t, i) => { const m = t.name.match(/T_(\d+)_(\d+)/); if (m) mainPosMap[m[1]+"_"+m[2]] = i; });
+  const MAIN_COLS = 18, MAIN_ROWS = 16;
+  const mainGrid = document.createElement("div"); mainGrid.className = "tile-grid";
+  mainGrid.style.gridTemplateColumns = `repeat(${MAIN_COLS}, ${palTileSize}px)`;
+  for (let r = 0; r < MAIN_ROWS; r++) {
+    for (let c = 0; c < MAIN_COLS; c++) {
       const key = String(r).padStart(2,"0") + "_" + String(c).padStart(2,"0");
-      const i = posMap[key];
+      const i = mainPosMap[key];
       if (i !== undefined) {
         const btn = document.createElement("div");
         btn.className = "tile-btn" + (selectedTiles.includes(i) ? " selected" : "");
         btn.dataset.idx = i; btn.title = TILES[i].name;
         const cv = document.createElement("canvas"); cv.width = 16; cv.height = 16;
-        cv.getContext("2d").drawImage(remappedImages[i] || tileImages[i], 0, 0);
+        cv.getContext("2d").drawImage(imgs[i] || tileImages[i], 0, 0);
         btn.appendChild(cv);
         const flag = document.createElement("div"); flag.className = "tile-flag";
-        flag.textContent = tileFlags[i];
+        flag.textContent = flagsLabel(tileFlags[i]);
         flag.style.display = tileFlags[i] > 0 ? "" : "none";
         btn.appendChild(flag);
         btn.addEventListener("click", (e) => selectTile(i, {ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey}));
-        btn.addEventListener("dblclick", () => openPixelEditor(i, false));
-        grid.appendChild(btn);
+        btn.addEventListener("dblclick", () => openPixelEditor(i));
+        mainGrid.appendChild(btn);
       } else {
         const spacer = document.createElement("div"); spacer.className = "tile-spacer";
-        grid.appendChild(spacer);
+        mainGrid.appendChild(spacer);
       }
     }
   }
-  pal.appendChild(grid);
-}
-function buildBGPalette(pal) {
-  const posMap = {};
-  BG_TILES.forEach((t, i) => { const m = t.name.match(/BG_(\d+)_(\d+)/); if (m) posMap[m[1]+"_"+m[2]] = i; });
-  const grid = document.createElement("div"); grid.className = "tile-grid";
-  grid.style.gridTemplateColumns = `repeat(${BG_TILE_COLS}, ${palTileSize}px)`;
+  pal.appendChild(mainGrid);
+  // Separator
+  const sep = document.createElement("div");
+  sep.style.cssText = "border-top:1px solid var(--border);margin:6px 0;opacity:0.5;";
+  const sepLabel = document.createElement("span");
+  sepLabel.style.cssText = "font-size:11px;color:var(--text-label);padding:0 4px;";
+  sepLabel.textContent = "BG Tiles";
+  sep.appendChild(sepLabel);
+  pal.appendChild(sep);
+  // BG tiles grid
+  const bgPosMap = {};
+  BG_TILES.forEach((t, i) => { const m = t.name.match(/BG_(\d+)_(\d+)/); if (m) bgPosMap[m[1]+"_"+m[2]] = i; });
+  const bgGrid = document.createElement("div"); bgGrid.className = "tile-grid";
+  bgGrid.style.gridTemplateColumns = `repeat(${BG_TILE_COLS}, ${palTileSize}px)`;
   for (let r = 0; r < BG_TILE_ROWS; r++) {
     for (let c = 0; c < BG_TILE_COLS; c++) {
       const key = String(r).padStart(2,"0") + "_" + String(c).padStart(2,"0");
-      const i = posMap[key];
-      if (i !== undefined) {
+      const localIdx = bgPosMap[key];
+      if (localIdx !== undefined) {
+        const uni = localIdx + MAIN_COUNT; // unified index
         const btn = document.createElement("div");
-        btn.className = "tile-btn" + (selectedTiles.includes(i) ? " selected" : "");
-        btn.dataset.idx = i; btn.title = BG_TILES[i].name;
+        btn.className = "tile-btn" + (selectedTiles.includes(uni) ? " selected" : "");
+        btn.dataset.idx = uni; btn.title = BG_TILES[localIdx].name;
         const cv = document.createElement("canvas"); cv.width = 16; cv.height = 16;
-        cv.getContext("2d").drawImage(bgRemappedImages[i] || bgTileImages[i], 0, 0);
+        cv.getContext("2d").drawImage(imgs[uni] || bgTileImages[localIdx], 0, 0);
         btn.appendChild(cv);
-        btn.addEventListener("click", (e) => selectTile(i, {ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey}));
-        btn.addEventListener("dblclick", () => openPixelEditor(i, true));
-        grid.appendChild(btn);
+        btn.addEventListener("click", (e) => selectTile(uni, {ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey}));
+        btn.addEventListener("dblclick", () => openPixelEditor(uni));
+        bgGrid.appendChild(btn);
       } else {
         const spacer = document.createElement("div"); spacer.className = "tile-spacer";
-        grid.appendChild(spacer);
+        bgGrid.appendChild(spacer);
       }
     }
   }
-  pal.appendChild(grid);
+  pal.appendChild(bgGrid);
 }
 
-function tileGridPos(idx, tiles) {
-  const re = activePalette === "bg" ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
-  const m = tiles[idx].name.match(re);
-  return m ? {r: parseInt(m[1]), c: parseInt(m[2])} : null;
+function tileGridPos(uni) {
+  const info = srcTileInfo(uni);
+  const re = isBgTile(uni) ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
+  const m = info.name.match(re);
+  return m ? {r: parseInt(m[1]), c: parseInt(m[2]), bg: isBgTile(uni)} : null;
 }
 function selectTile(i, opts) {
   const ctrl = opts && opts.ctrl;
   const shift = opts && opts.shift;
-  const curTiles = activePalette === "bg" ? BG_TILES : TILES;
   if (shift && lastClickedTile >= 0) {
-    const posA = tileGridPos(lastClickedTile, curTiles);
-    const posB = tileGridPos(i, curTiles);
-    if (posA && posB) {
+    const posA = tileGridPos(lastClickedTile);
+    const posB = tileGridPos(i);
+    if (posA && posB && posA.bg === posB.bg) {
+      // Shift-select rectangle within same tileset section
       const r0 = Math.min(posA.r, posB.r), r1 = Math.max(posA.r, posB.r);
       const c0 = Math.min(posA.c, posB.c), c1 = Math.max(posA.c, posB.c);
-      const re = activePalette === "bg" ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
+      const bg = posA.bg;
+      const tiles = bg ? BG_TILES : TILES;
+      const re = bg ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
+      const offset = bg ? MAIN_COUNT : 0;
       selectedTiles = [];
-      curTiles.forEach((t, idx) => {
+      tiles.forEach((t, idx) => {
         const m = t.name.match(re);
         if (m) {
           const r = parseInt(m[1]), c = parseInt(m[2]);
-          if (r >= r0 && r <= r1 && c >= c0 && c <= c1) selectedTiles.push(idx);
+          if (r >= r0 && r <= r1 && c >= c0 && c <= c1) selectedTiles.push(idx + offset);
         }
       });
     }
@@ -1001,7 +1012,7 @@ function selectTile(i, opts) {
   updateModeButtons();
   document.querySelectorAll(".tile-btn").forEach(b => b.classList.toggle("selected", selectedTiles.includes(parseInt(b.dataset.idx))));
   updateFlagEditor();
-  if (selectedTiles.length === 1) document.getElementById("st-tile").textContent = "Tile: " + curTiles[selectedTiles[0]].name;
+  if (selectedTiles.length === 1) document.getElementById("st-tile").textContent = "Tile: " + srcTileInfo(selectedTiles[0]).name;
   else document.getElementById("st-tile").textContent = "Tiles: " + selectedTiles.length + " selected";
 }
 
@@ -1009,8 +1020,7 @@ function updateFlagEditor() {
   if (selectedTiles.length>1) {
     document.getElementById("flag-tile-name").textContent = selectedTiles.length+" tiles";
   } else {
-    const curTiles = activePalette === "bg" ? BG_TILES : TILES;
-    document.getElementById("flag-tile-name").textContent = curTiles[getSelectedTile()].name;
+    document.getElementById("flag-tile-name").textContent = srcTileInfo(getSelectedTile()).name;
   }
   document.querySelectorAll("#flag-buttons button").forEach(b => {
     const bit = parseInt(b.dataset.val);
@@ -1028,8 +1038,10 @@ function buildFlagButtons() {
     btn.addEventListener("click", () => {
       const mask = 1 << i;
       // if all selected have it, clear; otherwise set
-      const allSet = selectedTiles.every(ti => (tileFlags[ti] & mask) !== 0);
-      for (const ti of selectedTiles) {
+      const mainTiles = selectedTiles.filter(ti => ti < MAIN_COUNT);
+      if (!mainTiles.length) return;
+      const allSet = mainTiles.every(ti => (tileFlags[ti] & mask) !== 0);
+      for (const ti of mainTiles) {
         if (allSet) tileFlags[ti] &= ~mask;
         else tileFlags[ti] |= mask;
       }
@@ -1040,7 +1052,7 @@ function buildFlagButtons() {
 }
 
 function flagsLabel(f) {
-  if (f === 0) return "";
+  if (!f) return "";
   const bits = [];
   for (let i = 0; i < 8; i++) if (f & (1 << i)) bits.push(i);
   return bits.join(",");
@@ -1053,7 +1065,8 @@ function updateSpawnInfo() {
 function updatePaletteFlags() {
   document.querySelectorAll(".tile-btn").forEach(b => {
     const idx = parseInt(b.dataset.idx); const flag = b.querySelector(".tile-flag");
-    const f = tileFlags[idx];
+    if (!flag) return; // BG tiles don't have flag overlays
+    const f = tileFlags[idx] || 0;
     flag.textContent = flagsLabel(f);
     flag.style.display = f > 0 ? "" : "none";
   });
@@ -1076,7 +1089,8 @@ function render() {
   canvas.style.left = panX + "px"; canvas.style.top = panY + "px";
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = P8_HEX[mapBgColor]; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  for (let L = 0; L < NUM_LAYERS; L++) {
+  const DRAW_ORDER = [2, 0, 1]; // BG2 (furthest), BG1, Main (closest)
+  for (const L of DRAW_ORDER) {
     if (!layerVisible[L]) continue;
     const lm = layers[L].map, lx = layers[L].xform;
     const lImgs = imagesForLayer(L), lRaw = rawImagesForLayer(L);
@@ -1099,8 +1113,8 @@ function render() {
         }
       }
     }
-    // draw spawn marker after main layer
-    if (L === NUM_LAYERS-1 && spawnX >= 0 && spawnY >= 0) {
+    // draw spawn marker after main layer (last in draw order)
+    if (L === 1 && spawnX >= 0 && spawnY >= 0) {
       const sx = spawnX * ts, sy = spawnY * ts;
       ctx.strokeStyle = "#0f0"; ctx.lineWidth = 2;
       ctx.strokeRect(sx+1, sy+1, ts-2, ts*2-2);
@@ -1109,8 +1123,8 @@ function render() {
       ctx.textAlign = "center"; ctx.textBaseline = "bottom";
       ctx.fillText("SPAWN", sx+ts/2, sy-2);
     }
-    // draw entities after main layer
-    if (L === NUM_LAYERS-1) {
+    // draw entities after main layer (last in draw order)
+    if (L === 1) {
       for (let ei = 0; ei < entities.length; ei++) {
         const ent = entities[ei];
         const et = ENT_TYPES.find(t => t.id === ent.type);
@@ -1591,7 +1605,7 @@ document.addEventListener("keydown", e => {
   if (e.code==="Tab") { e.preventDefault();toggleGrid(); }
   if (e.code==="KeyF") toggleFlagsOverlay();
   const num=parseInt(e.key);
-  if (!isNaN(num)&&num>=0&&num<=7) { const mask=1<<num;const allSet=selectedTiles.every(ti=>(tileFlags[ti]&mask)!==0);for(const ti of selectedTiles){if(allSet)tileFlags[ti]&=~mask;else tileFlags[ti]|=mask;}updateFlagEditor();updatePaletteFlags();render(); }
+  if (!isNaN(num)&&num>=0&&num<=7) { const mainTiles=selectedTiles.filter(ti=>ti<MAIN_COUNT);if(!mainTiles.length)return;const mask=1<<num;const allSet=mainTiles.every(ti=>(tileFlags[ti]&mask)!==0);for(const ti of mainTiles){if(allSet)tileFlags[ti]&=~mask;else tileFlags[ti]|=mask;}updateFlagEditor();updatePaletteFlags();render(); }
 });
 document.addEventListener("keyup", e => { if (e.code==="Space") spaceDown=false; });
 
@@ -1700,8 +1714,9 @@ document.getElementById("btn-clear").addEventListener("click", () => {
 
 function setPalZoom(size) {
   palTileSize = Math.max(12, Math.min(80, size));
-  const cols = activePalette === "bg" ? BG_TILE_COLS : 18;
-  document.querySelector(".tile-grid").style.gridTemplateColumns = `repeat(${cols}, ${palTileSize}px)`;
+  const grids = document.querySelectorAll(".tile-grid");
+  if (grids[0]) grids[0].style.gridTemplateColumns = `repeat(18, ${palTileSize}px)`;
+  if (grids[1]) grids[1].style.gridTemplateColumns = `repeat(${BG_TILE_COLS}, ${palTileSize}px)`;
   document.querySelectorAll(".tile-btn").forEach(b => { b.style.width = palTileSize+"px"; b.style.height = palTileSize+"px"; });
   document.querySelectorAll(".tile-spacer").forEach(s => { s.style.width = palTileSize+"px"; s.style.height = palTileSize+"px"; });
 }
@@ -1727,9 +1742,14 @@ function autoLoad() { try { const raw=localStorage.getItem("pico8_level_autosave
   if(!d.width) return false;
   mapW=d.width;mapH=d.height;
   if(d.layers) {
-    if(d.version>=3||d.bgTiles) {
+    if(d.version>=4) {
       for(let i=0;i<Math.min(d.layers.length,NUM_LAYERS);i++) layers[i]={map:d.layers[i].map.map(r=>new Uint8Array(r)),xform:d.layers[i].xform.map(r=>new Uint8Array(r))};
       for(let i=d.layers.length;i<NUM_LAYERS;i++) layers[i]=makeEmptyLayer();
+    } else if(d.version>=3||d.bgTiles) {
+      for(let i=0;i<Math.min(d.layers.length,NUM_LAYERS);i++) layers[i]={map:d.layers[i].map.map(r=>new Uint8Array(r)),xform:d.layers[i].xform.map(r=>new Uint8Array(r))};
+      for(let i=d.layers.length;i<NUM_LAYERS;i++) layers[i]=makeEmptyLayer();
+      // v3→v4 migration: offset layer 0 BG tile indices by MAIN_COUNT
+      const lm0=layers[0].map;for(let y=0;y<lm0.length;y++)for(let x=0;x<lm0[y].length;x++)if(lm0[y][x]!==255)lm0[y][x]+=MAIN_COUNT;
     } else {
       layers[0]=makeEmptyLayer();
       layers[1]={map:d.layers[1].map.map(r=>new Uint8Array(r)),xform:d.layers[1].xform.map(r=>new Uint8Array(r))};
@@ -1783,7 +1803,7 @@ function getLevelData() {
     return out;
   });
   return {
-    version: 3,
+    version: 4,
     width: mapW,
     height: mapH,
     tiles: TILES.map(t => t.name),
@@ -1808,8 +1828,8 @@ function applyLevelData(d) {
   pushUndo();
   mapW = d.width; mapH = d.height;
   if (d.layers) {
-    if (d.version >= 3 || d.bgTiles) {
-      // v3 format: BG layer uses BG tileset
+    if (d.version >= 4) {
+      // v4: unified tile indices across all layers
       for (let i = 0; i < Math.min(d.layers.length, NUM_LAYERS); i++) {
         layers[i] = {
           map: d.layers[i].map.map(r => new Uint8Array(r)),
@@ -1817,6 +1837,22 @@ function applyLevelData(d) {
         };
       }
       for (let i = d.layers.length; i < NUM_LAYERS; i++) layers[i] = makeEmptyLayer();
+    } else if (d.version >= 3 || d.bgTiles) {
+      // v3 format: BG layer(0) uses local BG tile indices — migrate to unified
+      for (let i = 0; i < Math.min(d.layers.length, NUM_LAYERS); i++) {
+        layers[i] = {
+          map: d.layers[i].map.map(r => new Uint8Array(r)),
+          xform: d.layers[i].xform.map(r => new Uint8Array(r))
+        };
+      }
+      for (let i = d.layers.length; i < NUM_LAYERS; i++) layers[i] = makeEmptyLayer();
+      // Migrate layer 0: offset BG tile indices by MAIN_COUNT
+      const lm = layers[0].map;
+      for (let y = 0; y < lm.length; y++) {
+        for (let x = 0; x < lm[y].length; x++) {
+          if (lm[y][x] !== 255) lm[y][x] += MAIN_COUNT;
+        }
+      }
     } else {
       // v2: BG layer had main tileset indices — clear BG, keep Main
       layers[0] = makeEmptyLayer();
@@ -1909,11 +1945,10 @@ function compressMap() {
 function estimateMapMemory() {
   const TRANS = 14;
 
-  const layerColors = [bgBandColors, bandColors, bandColors]; // layer 0=BG1, 1=Main, 2=BG2
-  function getTilePixels(lumArr, ti, L) {
-    const lums = lumArr[ti];
+  function getTilePixels(ti) {
+    const lums = srcLum(ti);
     if (!lums) return null;
-    const colors = layerColors[L];
+    const colors = isBgTile(ti) ? bgBandColors : bandColors;
     const pix = [];
     for (let p = 0; p < 256; p++) {
       if (lums[p].a < 128) { pix.push(TRANS); continue; }
@@ -1971,11 +2006,10 @@ function estimateMapMemory() {
   // Step 2: build runtime tiles from both tilesets, dedup into shared pool
   const seenHashes = new Map();
   let numRT = 0, tileRLETotal = 0;
-  const lumArrs = [bgTileLum, tileLum, tileLum];
   for (let L=0; L<NUM_LAYERS; L++) {
     const allTiles = new Set([...needBase[L], ...needRot90[L]]);
     for (const ti of allTiles) {
-      const base = getTilePixels(lumArrs[L], ti, L);
+      const base = getTilePixels(ti);
       if (!base) continue;
       if (needBase[L].has(ti)) {
         const hash = base.join(",");
@@ -2131,6 +2165,7 @@ document.querySelectorAll(".pal-tab").forEach(b => {
 
 // Boot
 loadTileImages(async () => {
+  MAIN_COUNT = TILES.length;
   extractTileLuminance();
   remapAllTiles();
   if (!autoLoad()) initMap();
@@ -2182,14 +2217,14 @@ function pixEditBuildSwatches() {
   }
 }
 
-function openPixelEditor(idx, isBg) {
-  pixEditIdx = idx;
-  pixEditIsBg = isBg;
-  const lumArr = isBg ? bgTileLum : tileLum;
-  const tiles = isBg ? BG_TILES : TILES;
-  pixEditPixels = lumArr[idx].map(p => ({lum: p.lum, a: p.a}));
-  pixEditOriginal = lumArr[idx].map(p => ({lum: p.lum, a: p.a}));
-  document.getElementById("pixedit-title").textContent = "Edit: " + tiles[idx].name;
+function openPixelEditor(uni) {
+  pixEditIdx = uni;
+  pixEditIsBg = isBgTile(uni);
+  const localIdx = pixEditIsBg ? uni - MAIN_COUNT : uni;
+  const lumArr = pixEditIsBg ? bgTileLum : tileLum;
+  pixEditPixels = lumArr[localIdx].map(p => ({lum: p.lum, a: p.a}));
+  pixEditOriginal = lumArr[localIdx].map(p => ({lum: p.lum, a: p.a}));
+  document.getElementById("pixedit-title").textContent = "Edit: " + srcTileInfo(uni).name;
   pixEditOpen = true;
   peModal.classList.add("show");
   pixEditBuildSwatches();
@@ -2292,6 +2327,7 @@ peCanvas.addEventListener("contextmenu", e => e.preventDefault());
 // Save
 document.getElementById("pixedit-save").addEventListener("click", () => {
   if (!pixEditOpen) return;
+  const localIdx = pixEditIsBg ? pixEditIdx - MAIN_COUNT : pixEditIdx;
   const tiles = pixEditIsBg ? BG_TILES : TILES;
   const lumArr = pixEditIsBg ? bgTileLum : tileLum;
   const images = pixEditIsBg ? bgTileImages : tileImages;
@@ -2306,12 +2342,12 @@ document.getElementById("pixedit-save").addEventListener("click", () => {
   tctx.putImageData(img, 0, 0);
   const dataUrl = tc.toDataURL("image/png");
   const b64 = dataUrl.split(",")[1];
-  tiles[pixEditIdx].b64 = b64;
+  tiles[localIdx].b64 = b64;
   // Update source image
   const newImg = new Image();
   newImg.onload = () => {
-    images[pixEditIdx] = newImg;
-    lumArr[pixEditIdx] = pixEditPixels.map(p => ({lum: p.lum, a: p.a}));
+    images[localIdx] = newImg;
+    lumArr[localIdx] = pixEditPixels.map(p => ({lum: p.lum, a: p.a}));
     remapAllTiles();
     refreshPaletteTiles();
     render();
@@ -2341,20 +2377,16 @@ function closePixelEditor() {
   peModal.classList.remove("show");
 }
 
-// New tile
+// New tile — adds to main tileset (T_ prefix)
 document.getElementById("pal-new-tile").addEventListener("click", () => {
-  const isBg = activePalette === "bg";
-  const tiles = isBg ? BG_TILES : TILES;
-  const images = isBg ? bgTileImages : tileImages;
-  const lumArr = isBg ? bgTileLum : tileLum;
-  const prefix = isBg ? "BG_" : "T_";
-  const colCount = isBg ? BG_TILE_COLS : 18;
-  const rowCount = isBg ? BG_TILE_ROWS : 16;
-  // Find next empty slot
+  const tiles = TILES;
+  const images = tileImages;
+  const lumArr = tileLum;
+  const colCount = 18;
+  const rowCount = 16;
   const usedSlots = new Set();
   tiles.forEach(t => {
-    const re = isBg ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
-    const m = t.name.match(re);
+    const m = t.name.match(/T_(\d+)_(\d+)/);
     if (m) usedSlots.add(m[1] + "_" + m[2]);
   });
   let newR = -1, newC = -1;
@@ -2365,8 +2397,7 @@ document.getElementById("pal-new-tile").addEventListener("click", () => {
     }
   }
   if (newR === -1) { showToast("No empty tile slots"); return; }
-  const name = prefix + String(newR).padStart(2,"0") + "_" + String(newC).padStart(2,"0");
-  // Create blank transparent 16x16 PNG
+  const name = "T_" + String(newR).padStart(2,"0") + "_" + String(newC).padStart(2,"0");
   const tc = document.createElement("canvas"); tc.width = 16; tc.height = 16;
   const b64 = tc.toDataURL("image/png").split(",")[1];
   const newIdx = tiles.length;
@@ -2375,27 +2406,28 @@ document.getElementById("pal-new-tile").addEventListener("click", () => {
   blankImg.onload = () => {
     images[newIdx] = blankImg;
     lumArr[newIdx] = Array.from({length: 256}, () => ({lum: 0, a: 0}));
-    if (!isBg && !tileFlags[newIdx]) tileFlags[newIdx] = 0;
+    tileFlags[newIdx] = 0;
+    MAIN_COUNT = TILES.length; // update count
     remapAllTiles();
     buildPalette();
     render();
-    openPixelEditor(newIdx, isBg);
+    openPixelEditor(newIdx); // unified index = local index for main tiles
   };
   blankImg.src = "data:image/png;base64," + b64;
 });
 
 // Export tileset as PNG
 document.getElementById("pixedit-export-ts").addEventListener("click", () => {
-  const isBg = pixEditIsBg;
-  const tiles = isBg ? BG_TILES : TILES;
-  const images = isBg ? bgTileImages : tileImages;
-  const cols = isBg ? BG_TILE_COLS : 18;
-  const rows = isBg ? BG_TILE_ROWS : 16;
+  const bg = pixEditIsBg;
+  const tiles = bg ? BG_TILES : TILES;
+  const images = bg ? bgTileImages : tileImages;
+  const cols = bg ? BG_TILE_COLS : 18;
+  const rows = bg ? BG_TILE_ROWS : 16;
   const tc = document.createElement("canvas");
   tc.width = cols * 16; tc.height = rows * 16;
   const tctx = tc.getContext("2d");
   tiles.forEach(t => {
-    const re = isBg ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
+    const re = bg ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
     const m = t.name.match(re);
     if (!m) return;
     const r = parseInt(m[1]), c = parseInt(m[2]);
@@ -2403,7 +2435,7 @@ document.getElementById("pixedit-export-ts").addEventListener("click", () => {
     tctx.drawImage(images[idx], c * 16, r * 16);
   });
   const a = document.createElement("a");
-  a.download = isBg ? "bg_tileset.png" : "fg_tileset.png";
+  a.download = bg ? "bg_tileset.png" : "fg_tileset.png";
   a.href = tc.toDataURL("image/png");
   a.click();
   showToast("Tileset exported");
