@@ -679,7 +679,7 @@ function update_parts()
    if tile_flag(p.x\16,p.y\16)&9>0 then
     p.y-=p.vy p.vy*=-0.4 p.vx*=0.7
    end
-   p.vy+=0.15
+   p.vy+=0.08
   end
   p.age+=1
   if p.c or p.cl then

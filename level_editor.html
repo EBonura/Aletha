@@ -129,6 +129,22 @@ textarea { border-radius: 4px; }
 #toast { position:fixed; top:12px; left:50%; transform:translateX(-50%); background:var(--accent); color:var(--text); padding:6px 16px; border-radius:4px; font-size:12px; opacity:0; transition:opacity 0.2s; pointer-events:none; z-index:200; }
 #toast.show { opacity:1; }
 
+/* Pixel editor modal */
+#pixedit-modal { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.85); z-index:100; justify-content:center; align-items:center; }
+#pixedit-modal.show { display:flex; }
+#pixedit-content { background:var(--bg-header); padding:20px; border-radius:8px; display:flex; flex-direction:column; gap:12px; }
+#pixedit-content h3 { font-size:14px; }
+#pixedit-body { display:flex; gap:16px; }
+#pixedit-canvas { cursor:crosshair; border:1px solid var(--border); }
+#pixedit-preview { width:80px; height:80px; image-rendering:pixelated; border:1px solid var(--border); }
+#pixedit-swatches { display:flex; gap:3px; flex-wrap:wrap; margin-top:4px; }
+.pixedit-swatch { width:28px; height:28px; border:2px solid transparent; cursor:pointer; border-radius:3px; }
+.pixedit-swatch:hover { border-color:var(--text); }
+.pixedit-swatch.active { border-color:var(--accent); box-shadow:0 0 4px var(--accent); }
+.pixedit-swatch-trans { background:repeating-conic-gradient(#444 0% 25%, #222 0% 50%) 50%/10px 10px; }
+#pixedit-btns { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+#pixedit-btns button { flex:1; min-width:60px; }
+
 /* Palette tabs */
 .pal-tab { background: var(--bg-btn); color: var(--text-label); border: 1px solid var(--border); cursor: pointer; padding: 6px 14px; font-size: 14px; font-family: monospace; }
 .pal-tab.active { background: var(--accent); color: var(--text); border-color: var(--accent); }
@@ -167,7 +183,7 @@ textarea { border-radius: 4px; }
 <body>
 
 <div id="sidebar">
-  <h2><button id="pal-zoom-out">-</button> <button class="pal-tab active" data-tab="main">Tiles</button><button class="pal-tab" data-tab="bg">BG</button> <button id="pal-zoom-in">+</button></h2>
+  <h2><button id="pal-zoom-out">-</button> <button class="pal-tab active" data-tab="main">Tiles</button><button class="pal-tab" data-tab="bg">BG</button> <button id="pal-zoom-in">+</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button></h2>
   <div id="palette"></div>
   <div id="band-editor">
     <h3>Color Remap</h3>
@@ -321,6 +337,33 @@ textarea { border-radius: 4px; }
     <textarea id="export-hex" readonly></textarea>
     <button id="export-copy">Copy to Clipboard</button>
     <button id="export-close">Close</button>
+  </div>
+</div>
+
+<div id="pixedit-modal">
+  <div id="pixedit-content">
+    <h3 id="pixedit-title">Edit Tile</h3>
+    <div id="pixedit-body">
+      <canvas id="pixedit-canvas" width="322" height="322"></canvas>
+      <div>
+        <div class="tb-label">Preview</div>
+        <canvas id="pixedit-preview" width="16" height="16"></canvas>
+        <div class="tb-label" style="margin-top:10px;">Color</div>
+        <div id="pixedit-swatches"></div>
+        <div id="pixedit-btns">
+          <button id="pixedit-clear">Clear</button>
+          <button id="pixedit-revert">Revert</button>
+        </div>
+        <div id="pixedit-btns" style="margin-top:6px;">
+          <button id="pixedit-save">Save</button>
+          <button id="pixedit-cancel">Cancel</button>
+        </div>
+        <div style="margin-top:12px;">
+          <div class="tb-label">Tileset</div>
+          <button id="pixedit-export-ts" style="width:100%;margin-top:4px;">Export PNG</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -603,6 +646,7 @@ function buildBandEditor() {
         row.querySelectorAll(".band-swatch").forEach(s => s.classList.toggle("active", parseInt(s.dataset.color) === c));
         document.getElementById("band-preview-" + bi).style.backgroundColor = P8_HEX[c];
         remapAllTiles(); refreshPaletteTiles(); render();
+        if (pixEditOpen) { pixEditBuildSwatches(); pixEditRender(); }
       });
       colors.appendChild(sw);
     }
@@ -694,6 +738,7 @@ function buildMainPalette(pal) {
         flag.style.display = tileFlags[i] > 0 ? "" : "none";
         btn.appendChild(flag);
         btn.addEventListener("click", (e) => selectTile(i, {ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey}));
+        btn.addEventListener("dblclick", () => openPixelEditor(i, false));
         grid.appendChild(btn);
       } else {
         const spacer = document.createElement("div"); spacer.className = "tile-spacer";
@@ -720,6 +765,7 @@ function buildBGPalette(pal) {
         cv.getContext("2d").drawImage(bgRemappedImages[i] || bgTileImages[i], 0, 0);
         btn.appendChild(cv);
         btn.addEventListener("click", (e) => selectTile(i, {ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey}));
+        btn.addEventListener("dblclick", () => openPixelEditor(i, true));
         grid.appendChild(btn);
       } else {
         const spacer = document.createElement("div"); spacer.className = "tile-spacer";
@@ -1328,6 +1374,10 @@ wrap.addEventListener("mouseleave", () => { isDrawing=false; });
 
 // Keyboard
 document.addEventListener("keydown", e => {
+  if (pixEditOpen) {
+    if (e.code === "Escape") { closePixelEditor(); e.preventDefault(); }
+    return;
+  }
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA") return;
   if (e.code==="Space") { spaceDown=true;e.preventDefault(); }
@@ -1898,6 +1948,259 @@ loadTileImages(async () => {
   updateSpawnInfo();
   render();
   await loadLevel();
+});
+
+// ── Pixel Tile Editor ──────────────────────────────────────────
+const BAND_GREY = [10, 33, 73, 143, 220]; // midpoint lum per band
+let pixEditOpen = false;
+let pixEditIdx = -1;
+let pixEditIsBg = false;
+let pixEditPixels = []; // 256 entries: {lum, a}
+let pixEditOriginal = []; // snapshot for revert
+let pixEditBand = 2; // selected band index (0-4), -1 = transparent
+
+const peCanvas = document.getElementById("pixedit-canvas");
+const peCtx = peCanvas.getContext("2d");
+const pePreview = document.getElementById("pixedit-preview");
+const pePrevCtx = pePreview.getContext("2d");
+const peModal = document.getElementById("pixedit-modal");
+const peSwatches = document.getElementById("pixedit-swatches");
+const PECELL = 20; // px per cell on edit canvas
+
+function pixEditBuildSwatches() {
+  peSwatches.innerHTML = "";
+  // transparent swatch
+  const ts = document.createElement("div");
+  ts.className = "pixedit-swatch pixedit-swatch-trans" + (pixEditBand === -1 ? " active" : "");
+  ts.title = "Transparent";
+  ts.addEventListener("click", () => { pixEditBand = -1; pixEditBuildSwatches(); });
+  peSwatches.appendChild(ts);
+  // band swatches
+  for (let b = 0; b < BANDS.length; b++) {
+    const s = document.createElement("div");
+    s.className = "pixedit-swatch" + (pixEditBand === b ? " active" : "");
+    s.style.backgroundColor = P8_HEX[bandColors[b]];
+    s.title = BANDS[b][0];
+    s.addEventListener("click", () => { pixEditBand = b; pixEditBuildSwatches(); });
+    peSwatches.appendChild(s);
+  }
+}
+
+function openPixelEditor(idx, isBg) {
+  pixEditIdx = idx;
+  pixEditIsBg = isBg;
+  const lumArr = isBg ? bgTileLum : tileLum;
+  const tiles = isBg ? BG_TILES : TILES;
+  pixEditPixels = lumArr[idx].map(p => ({lum: p.lum, a: p.a}));
+  pixEditOriginal = lumArr[idx].map(p => ({lum: p.lum, a: p.a}));
+  document.getElementById("pixedit-title").textContent = "Edit: " + tiles[idx].name;
+  pixEditOpen = true;
+  peModal.classList.add("show");
+  pixEditBuildSwatches();
+  pixEditRender();
+}
+
+function pixEditRender() {
+  // main canvas – grid of 16x16 cells
+  peCtx.clearRect(0, 0, peCanvas.width, peCanvas.height);
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) {
+      const p = pixEditPixels[y * 16 + x];
+      const cx = x * PECELL + 1, cy = y * PECELL + 1;
+      if (p.a === 0) {
+        // checkerboard for transparent
+        peCtx.fillStyle = "#222"; peCtx.fillRect(cx, cy, PECELL, PECELL);
+        peCtx.fillStyle = "#444"; peCtx.fillRect(cx, cy, PECELL/2, PECELL/2);
+        peCtx.fillStyle = "#444"; peCtx.fillRect(cx+PECELL/2, cy+PECELL/2, PECELL/2, PECELL/2);
+      } else {
+        const band = lumToBand(p.lum);
+        peCtx.fillStyle = P8_HEX[bandColors[band]];
+        peCtx.fillRect(cx, cy, PECELL, PECELL);
+      }
+    }
+  }
+  // grid lines
+  peCtx.strokeStyle = "rgba(255,255,255,0.1)";
+  peCtx.lineWidth = 1;
+  for (let i = 0; i <= 16; i++) {
+    peCtx.beginPath(); peCtx.moveTo(i * PECELL + 0.5, 0); peCtx.lineTo(i * PECELL + 0.5, 322); peCtx.stroke();
+    peCtx.beginPath(); peCtx.moveTo(0, i * PECELL + 0.5); peCtx.lineTo(322, i * PECELL + 0.5); peCtx.stroke();
+  }
+  // preview canvas
+  const prevImg = pePrevCtx.createImageData(16, 16);
+  for (let i = 0; i < 256; i++) {
+    const p = pixEditPixels[i];
+    if (p.a === 0) { prevImg.data[i*4+3] = 0; continue; }
+    const band = lumToBand(p.lum);
+    const col = P8_RGB[bandColors[band]];
+    prevImg.data[i*4] = col[0]; prevImg.data[i*4+1] = col[1]; prevImg.data[i*4+2] = col[2]; prevImg.data[i*4+3] = 255;
+  }
+  pePrevCtx.putImageData(prevImg, 0, 0);
+}
+
+function pixEditPaint(px, py) {
+  if (px < 0 || px > 15 || py < 0 || py > 15) return;
+  const i = py * 16 + px;
+  if (pixEditBand === -1) {
+    pixEditPixels[i] = {lum: 0, a: 0};
+  } else {
+    pixEditPixels[i] = {lum: BAND_GREY[pixEditBand], a: 255};
+  }
+  pixEditRender();
+}
+
+function pixEditEyedrop(px, py) {
+  if (px < 0 || px > 15 || py < 0 || py > 15) return;
+  const p = pixEditPixels[py * 16 + px];
+  if (p.a === 0) { pixEditBand = -1; }
+  else { pixEditBand = lumToBand(p.lum); }
+  pixEditBuildSwatches();
+}
+
+// Canvas mouse handling
+let pePainting = false;
+peCanvas.addEventListener("mousedown", e => {
+  if (e.button === 2) { // right click = eyedrop
+    const r = peCanvas.getBoundingClientRect();
+    const px = Math.floor((e.clientX - r.left - 1) / PECELL);
+    const py = Math.floor((e.clientY - r.top - 1) / PECELL);
+    pixEditEyedrop(px, py);
+    return;
+  }
+  pePainting = true;
+  const r = peCanvas.getBoundingClientRect();
+  const px = Math.floor((e.clientX - r.left - 1) / PECELL);
+  const py = Math.floor((e.clientY - r.top - 1) / PECELL);
+  pixEditPaint(px, py);
+});
+peCanvas.addEventListener("mousemove", e => {
+  if (!pePainting) return;
+  const r = peCanvas.getBoundingClientRect();
+  const px = Math.floor((e.clientX - r.left - 1) / PECELL);
+  const py = Math.floor((e.clientY - r.top - 1) / PECELL);
+  pixEditPaint(px, py);
+});
+document.addEventListener("mouseup", () => { pePainting = false; });
+peCanvas.addEventListener("contextmenu", e => e.preventDefault());
+
+// Save
+document.getElementById("pixedit-save").addEventListener("click", () => {
+  if (!pixEditOpen) return;
+  const tiles = pixEditIsBg ? BG_TILES : TILES;
+  const lumArr = pixEditIsBg ? bgTileLum : tileLum;
+  const images = pixEditIsBg ? bgTileImages : tileImages;
+  // Build grayscale PNG via canvas
+  const tc = document.createElement("canvas"); tc.width = 16; tc.height = 16;
+  const tctx = tc.getContext("2d");
+  const img = tctx.createImageData(16, 16);
+  for (let i = 0; i < 256; i++) {
+    const p = pixEditPixels[i];
+    img.data[i*4] = p.lum; img.data[i*4+1] = p.lum; img.data[i*4+2] = p.lum; img.data[i*4+3] = p.a;
+  }
+  tctx.putImageData(img, 0, 0);
+  const dataUrl = tc.toDataURL("image/png");
+  const b64 = dataUrl.split(",")[1];
+  tiles[pixEditIdx].b64 = b64;
+  // Update source image
+  const newImg = new Image();
+  newImg.onload = () => {
+    images[pixEditIdx] = newImg;
+    lumArr[pixEditIdx] = pixEditPixels.map(p => ({lum: p.lum, a: p.a}));
+    remapAllTiles();
+    refreshPaletteTiles();
+    render();
+    showToast("Tile saved");
+  };
+  newImg.src = dataUrl;
+  closePixelEditor();
+});
+
+// Cancel
+document.getElementById("pixedit-cancel").addEventListener("click", closePixelEditor);
+
+// Clear
+document.getElementById("pixedit-clear").addEventListener("click", () => {
+  pixEditPixels = Array.from({length: 256}, () => ({lum: 0, a: 0}));
+  pixEditRender();
+});
+
+// Revert
+document.getElementById("pixedit-revert").addEventListener("click", () => {
+  pixEditPixels = pixEditOriginal.map(p => ({lum: p.lum, a: p.a}));
+  pixEditRender();
+});
+
+function closePixelEditor() {
+  pixEditOpen = false;
+  peModal.classList.remove("show");
+}
+
+// New tile
+document.getElementById("pal-new-tile").addEventListener("click", () => {
+  const isBg = activePalette === "bg";
+  const tiles = isBg ? BG_TILES : TILES;
+  const images = isBg ? bgTileImages : tileImages;
+  const lumArr = isBg ? bgTileLum : tileLum;
+  const prefix = isBg ? "BG_" : "T_";
+  const colCount = isBg ? BG_TILE_COLS : 18;
+  const rowCount = isBg ? BG_TILE_ROWS : 16;
+  // Find next empty slot
+  const usedSlots = new Set();
+  tiles.forEach(t => {
+    const re = isBg ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
+    const m = t.name.match(re);
+    if (m) usedSlots.add(m[1] + "_" + m[2]);
+  });
+  let newR = -1, newC = -1;
+  outer: for (let r = rowCount - 1; r >= 0; r--) {
+    for (let c = colCount - 1; c >= 0; c--) {
+      const key = String(r).padStart(2,"0") + "_" + String(c).padStart(2,"0");
+      if (!usedSlots.has(key)) { newR = r; newC = c; break outer; }
+    }
+  }
+  if (newR === -1) { showToast("No empty tile slots"); return; }
+  const name = prefix + String(newR).padStart(2,"0") + "_" + String(newC).padStart(2,"0");
+  // Create blank transparent 16x16 PNG
+  const tc = document.createElement("canvas"); tc.width = 16; tc.height = 16;
+  const b64 = tc.toDataURL("image/png").split(",")[1];
+  const newIdx = tiles.length;
+  tiles.push({name, b64});
+  const blankImg = new Image();
+  blankImg.onload = () => {
+    images[newIdx] = blankImg;
+    lumArr[newIdx] = Array.from({length: 256}, () => ({lum: 0, a: 0}));
+    if (!isBg && !tileFlags[newIdx]) tileFlags[newIdx] = 0;
+    remapAllTiles();
+    buildPalette();
+    render();
+    openPixelEditor(newIdx, isBg);
+  };
+  blankImg.src = "data:image/png;base64," + b64;
+});
+
+// Export tileset as PNG
+document.getElementById("pixedit-export-ts").addEventListener("click", () => {
+  const isBg = pixEditIsBg;
+  const tiles = isBg ? BG_TILES : TILES;
+  const images = isBg ? bgTileImages : tileImages;
+  const cols = isBg ? BG_TILE_COLS : 18;
+  const rows = isBg ? BG_TILE_ROWS : 16;
+  const tc = document.createElement("canvas");
+  tc.width = cols * 16; tc.height = rows * 16;
+  const tctx = tc.getContext("2d");
+  tiles.forEach(t => {
+    const re = isBg ? /BG_(\d+)_(\d+)/ : /T_(\d+)_(\d+)/;
+    const m = t.name.match(re);
+    if (!m) return;
+    const r = parseInt(m[1]), c = parseInt(m[2]);
+    const idx = tiles.indexOf(t);
+    tctx.drawImage(images[idx], c * 16, r * 16);
+  });
+  const a = document.createElement("a");
+  a.download = isBg ? "bg_tileset.png" : "fg_tileset.png";
+  a.href = tc.toDataURL("image/png");
+  a.click();
+  showToast("Tileset exported");
 });
 
 // Tooltips
