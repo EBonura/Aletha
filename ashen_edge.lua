@@ -70,7 +70,7 @@ parts={}
 gems=0   -- collected count
 
 -- player HP
-plr_hp,plr_inv,death_t,ckpt_x,ckpt_y=3,0,0,0,0
+plr_hp,plr_inv,death_t,ckpt_x,ckpt_y,safe_x,safe_y=3,0,0,0,0,0,0
 ptl_rm={[5]=2,[6]=8,[7]=8}
 
 -- spider projectiles
@@ -242,13 +242,14 @@ function cache_anims()
  hp_buf=decode_anim(ai)[1][1]
 end
 
-function hurt_plr(kx)
+function hurt_plr()
  if plr_inv==0 and state~="death" then
   plr_hp-=1
   plr_inv=60
-  vx,vy=kx or 0,-1.5
+  px,py=safe_x,safe_y
+  vx,vy=0,0
+  set_anim(a_hit,"land")
   if plr_hp<=0 then
-   vx,vy=0,0
    set_anim(a_death,"death")
    death_t=0
   end
@@ -523,6 +524,7 @@ end
 function reset_game()
  plr_hp,plr_inv=3,0
  px,py=ckpt_x,ckpt_y
+ safe_x,safe_y=px,py
  vx,vy=0,0
  set_anim(a_idle,"idle")
  grounded,death_t=true,0
@@ -543,6 +545,7 @@ function _init()
  -- set player to spawn
  px,py=spn_x*16+8,spn_y*16
  ckpt_x,ckpt_y=px,py
+ safe_x,safe_y=px,py
  music(0)
 end
 
@@ -1046,14 +1049,14 @@ function update_bot(e)
  elseif s=="fdash" then
   e.vx=e.mdir*3
   if abs(px-e.x)<18 and abs(py+11-e.y+12)<16 then
-   hurt_plr(e.x<px and 2 or -2)
+   hurt_plr()
   end
   if t and af(e,nf) then
    e.vx,e.atk_cd=0,120 go_idle(e,abi,60)
   end
  elseif s=="attack" then
   if t then
-   if ff(e) and dist<28 and abs(ddy)<24 then hurt_plr(e.x<px and 2 or -2) end
+   if ff(e) and dist<28 and abs(ddy)<24 then hurt_plr() end
    if af(e,nf) then
     e.fired,e.atk_cd=false,60
     go_idle(e,abi,30)
@@ -1081,7 +1084,7 @@ function update_sprojs()
    elseif p.x>px-3 and p.x<px+3
     and p.y>py+3 and p.y<py+19 then
     p.exp,p.et=true,0
-    hurt_plr(p.dx>0 and 2 or -2)
+    hurt_plr()
    -- off screen
    elseif p.x<cam_x-8 or p.x>cam_x+136
     or p.y<cam_y-8 or p.y>cam_y+136 then
@@ -1119,8 +1122,7 @@ function update_ents()
    local t,nf=ent_tick(e,6)
    if t then e.frame=e.frame%(e.type==7 and 6 or nf)+1 end
    if e.type==7 and e.lit and abs(px-e.x-8)<11 and abs(py+11-e.y-8)<14 then
-    local k=e.x+8<px and 2 or -2
-    hurt_plr(k) vx=k
+    hurt_plr()
    end
   elseif e.type==8 and px\16>=e.tx and px\16<e.tx+e.tw and py\16>=e.ty and py\16<e.ty+e.th then
    zt=e.group
@@ -1248,10 +1250,7 @@ function _update60()
    fade_v+=fade_d
    if fade_v>=8 then
     fade_v=8
-    if gs==0 then gs=1
-    elseif gs==1 then gs=2
-    elseif gs==2 then reset_game() gs=1
-    end
+    if gs==2 then reset_game() end gs=gs%2+1
     fade_d=-1
    elseif fade_v<=0 then
     fade_v,fade_d=0,0
@@ -1263,7 +1262,7 @@ function _update60()
   return
  end
  if plr_inv>0 then plr_inv-=1 end
- local lr=btn(1) and 1 or btn(0) and -1 or 0
+ local lr=plr_inv>30 and 0 or btn(1) and 1 or btn(0) and -1 or 0
 
  -- -- input buffering --
  if btnp(2) then buf_jump=8 end
@@ -1405,6 +1404,7 @@ function _update60()
 
  end
 
+ if grounded and (s=="idle" or s=="run") then safe_x,safe_y=px,py end
  -- -- physics --
  prev_by1=py+19
  if not grounded then
@@ -1427,6 +1427,9 @@ function _update60()
  -- clamp to map bounds
  local min_x,max_x=3,lvl_w*16-4
  px=mid(min_x,px,max_x)
+
+ -- hazard tiles
+ if tile_flag(px\16,(py+19)\16)&16>0 then hurt_plr() end
 
  -- attack hitbox vs destructibles + entities
  if state=="attack" or state=="sweep" then

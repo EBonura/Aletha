@@ -96,7 +96,7 @@ TILE_SIZE = 16
 TILESET_COLS = 18
 TILESET_ROWS = 16
 BG_TILESET_COLS = 19
-BG_TILESET_ROWS = 6
+BG_TILESET_ROWS = 9
 
 # Luminance band → PICO-8 color mapping (matches editor defaults)
 BAND_RANGES = [(0, 20), (21, 45), (46, 100), (101, 185), (186, 255)]
@@ -1213,9 +1213,11 @@ def slice_bg_tileset():
     return tiles
 
 
-def remap_tile_colors(tile_img):
+def remap_tile_colors(tile_img, colors=None):
     """Convert greyscale tile to PICO-8 colors using luminance bands.
     Returns list of 256 P8 color indices (row-major 16x16)."""
+    if colors is None:
+        colors = BAND_COLORS
     grey = tile_img.convert("LA")  # luminance + alpha
     pixels = list(grey.getdata())
     result = []
@@ -1223,12 +1225,12 @@ def remap_tile_colors(tile_img):
         if alpha < 128:
             result.append(TRANS)
         else:
-            color = BAND_COLORS[-1]  # default to last band
+            color = colors[-1]  # default to last band
             for i, (lo, hi) in enumerate(BAND_RANGES):
                 if lo <= lum <= hi:
-                    color = BAND_COLORS[i]
+                    color = colors[i]
                     break
-            result.append(color)
+            result.append(TRANS if color == -1 else color)
     return result
 
 
@@ -1307,7 +1309,7 @@ def read_level_json(json_path):
     """Read level data from level_data.json.
     Returns (map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, flags, band_colors, parallax)
     where map_grids[layer][y][x] = tile_index (255=empty), xform_grids[layer][y][x] = packed xform.
-    2 layers: 0=BG, 1=Main."""
+    3 layers: 0=BG, 1=Main, 2=FG."""
     with open(json_path) as f:
         data = json.load(f)
 
@@ -1334,18 +1336,24 @@ def read_level_json(json_path):
         for layer in data["layers"]:
             map_grids.append(parse_grid(layer["map"]))
             xform_grids.append(parse_grid(layer["xform"]))
-        # Only keep first 2 layers (BG, Main) — FG was removed
-        map_grids = map_grids[:2]
-        xform_grids = xform_grids[:2]
+        # Keep up to 3 layers (BG, Main, FG)
+        map_grids = map_grids[:3]
+        xform_grids = xform_grids[:3]
         # v2→v3 migration: if no bgTiles field, BG layer had main tileset indices — clear it
         if "bgTiles" not in data and data.get("version", 2) < 3:
             map_grids[0] = empty_grid()
             xform_grids[0] = zero_grid()
     else:
         # v1 migration: single map → Main layer (index 1)
-        map_grids = [empty_grid(), parse_grid(data["map"])]
+        map_grids = [empty_grid(), parse_grid(data["map"]), empty_grid()]
         xf = parse_grid(data["mapXform"]) if "mapXform" in data else zero_grid()
-        xform_grids = [zero_grid(), xf]
+        xform_grids = [zero_grid(), xf, zero_grid()]
+
+    # Pad to 3 layers if old save had only 2
+    while len(map_grids) < 3:
+        map_grids.append(empty_grid())
+    while len(xform_grids) < 3:
+        xform_grids.append(zero_grid())
 
     flags = [0] * 256
     if "flags" in data:
@@ -1357,13 +1365,19 @@ def read_level_json(json_path):
     if "bandColors" in data:
         band_colors = [int(c) for c in data["bandColors"]]
 
-    parallax = [0.5, 1.0]  # defaults: BG, Main
+    bg_band_colors = None
+    if "bgBandColors" in data:
+        bg_band_colors = [int(c) for c in data["bgBandColors"]]
+
+    parallax = [0.5, 1.0, 1.0]  # defaults: BG, Main, FG
     if "parallax" in data:
-        parallax = [float(v) for v in data["parallax"]][:2]
+        p = [float(v) for v in data["parallax"]][:3]
+        for i, v in enumerate(p):
+            parallax[i] = v
 
     entities = data.get("entities", [])
 
-    return w, h, map_grids, xform_grids, sx, sy, flags, band_colors, parallax, entities
+    return w, h, map_grids, xform_grids, sx, sy, flags, band_colors, bg_band_colors, parallax, entities
 
 
 ## -- Map layer encoding modes --
@@ -1502,15 +1516,17 @@ def build_level_data(tileset, bg_tileset, map_data):
         tile_flags: dict of runtime_tile_id -> flag byte
         gen_lines: list of Lua code lines for generated block
     """
-    map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, editor_flags, band_colors, parallax, entities = map_data
+    map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, editor_flags, band_colors, bg_band_colors, parallax, entities = map_data
     num_layers = len(map_grids)
-    # Layer 0 = BG (uses bg_tileset), Layer 1 = Main (uses tileset)
-    layer_tilesets = [bg_tileset, tileset]
+    # Layer 0 = BG (uses bg_tileset), Layer 1 = Main (uses tileset), Layer 2 = FG (uses tileset)
+    layer_tilesets = [bg_tileset, tileset, tileset]
 
     # Use band colors from level data if available
     global BAND_COLORS
     if band_colors and len(band_colors) == len(BAND_COLORS):
         BAND_COLORS = band_colors
+    BG_BAND_COLORS = list(bg_band_colors) if bg_band_colors and len(bg_band_colors) == len(BAND_COLORS) else list(BAND_COLORS)
+    layer_band_colors = [BG_BAND_COLORS, BAND_COLORS, BAND_COLORS]  # layer 0=BG, 1=Main, 2=FG
 
     print(f"\n=== LEVEL DATA ===")
     print(f"  Map size: {map_w}x{map_h} ({map_w*map_h} cells), {num_layers} layers")
@@ -1571,7 +1587,7 @@ def build_level_data(tileset, bg_tileset, map_data):
                 print(f"  WARNING: layer {L} tile index {ti} out of range (tileset has {len(ts)}), skipping")
                 continue
             name, tile_img = ts[ti]
-            base_pixels = remap_tile_colors(tile_img)
+            base_pixels = remap_tile_colors(tile_img, layer_band_colors[L])
             if ti in used_base[L]:
                 add_tile_variant(base_pixels, L, ti, False)
             if ti in used_rot90[L]:
@@ -1581,10 +1597,11 @@ def build_level_data(tileset, bg_tileset, map_data):
     process_layer_tiles(1)  # Main → sprite sheet
     num_spr_tiles = len(rt_tiles)
     process_layer_tiles(0)  # BG → user memory
+    process_layer_tiles(2)  # FG → user memory
     num_rt = len(rt_tiles)
 
-    print(f"  BG: {len(used_base[0]|used_rot90[0])} editor tiles, Main: {len(used_base[1]|used_rot90[1])} editor tiles")
-    print(f"  Runtime tiles: {num_rt} ({num_spr_tiles} spr + {num_rt - num_spr_tiles} bg)")
+    print(f"  BG: {len(used_base[0]|used_rot90[0])} editor tiles, Main: {len(used_base[1]|used_rot90[1])} editor tiles, FG: {len(used_base[2]|used_rot90[2])} editor tiles")
+    print(f"  Runtime tiles: {num_rt} ({num_spr_tiles} spr + {num_rt - num_spr_tiles} bg+fg)")
 
     # Sprite sheet: 128x128px = 8x8 grid of 16x16 tiles = 64 max
     if num_spr_tiles > 64:
@@ -1594,14 +1611,14 @@ def build_level_data(tileset, bg_tileset, map_data):
     max_main_rt = max(main_rt_ids) if main_rt_ids else 0
     if max_main_rt > 63:
         print(f"  WARNING: main layer uses rt_id up to {max_main_rt}, exceeds 63 tile limit!")
-    # BG tiles in user memory: 0x4300-0x5FFF = 7424 bytes, 128 bytes/tile = 58 max
-    num_bg_tiles = num_rt - num_spr_tiles
-    if num_bg_tiles * 128 > 7424:
-        print(f"  WARNING: {num_bg_tiles} BG tiles ({num_bg_tiles*128}b) exceeds user memory (7424b)!")
+    # BG+FG tiles in user memory: 0x4300-0x5FFF = 7424 bytes, 128 bytes/tile = 58 max
+    num_mem_tiles = num_rt - num_spr_tiles
+    if num_mem_tiles * 128 > 7424:
+        print(f"  WARNING: {num_mem_tiles} BG+FG tiles ({num_mem_tiles*128}b) exceeds user memory (7424b)!")
 
     def editor_to_cell(L, ti, xf):
         """Convert editor (tile_id, packed_xform) to cell byte for layer L.
-        BG layer (0): cell = rt_tile_id (no flip bits, max 255 tiles)
+        BG/FG layers (0,2): cell = rt_tile_id (no flip bits, max 255 tiles)
         Main layer (1): cell = (rt_tile_id << 2) | (flip_x << 1) | flip_y (max 63 tiles)
         Returns 0 for empty."""
         if ti == 255:
@@ -1615,8 +1632,8 @@ def build_level_data(tileset, bg_tileset, map_data):
             rt_id = rot90_rt[L].get(ti, 0)
         if rt_id == 0:
             return 0
-        # BG layer: no flip bits, just tile id
-        if L == 0:
+        # BG/FG layers: no flip bits, just tile id
+        if L != 1:
             return rt_id
         if rot >= 2:
             fx = int(not hflip)
@@ -1670,7 +1687,7 @@ def build_level_data(tileset, bg_tileset, map_data):
             for x in range(map_w):
                 row.append(editor_to_cell(L, mg[y][x], xg[y][x]))
             cell_grid.append(row)
-        label = ['BG', 'Main'][L]
+        label = ['BG', 'Main', 'FG'][L]
         data, desc = encode_layer(cell_grid, map_w, map_h, label)
         layer_data.append(data)
         print(f"  Layer {L} ({label}): {desc}")
@@ -1686,7 +1703,7 @@ def build_level_data(tileset, bg_tileset, map_data):
     #   tile_blob_size: u16 LE
     #   layer_size[0..nl-1]: u16 LE each
     # Then: tile_blob
-    # Then: layer 0 EG2 data, layer 1 EG2 data (each: bpp byte + EG2 bitstream)
+    # Then: layer 0..N EG2 data (each: bpp byte + EG2 bitstream)
     # Then: entity data
     header = bytearray()
     header.append(num_rt)
