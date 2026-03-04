@@ -35,7 +35,7 @@ textarea { border-radius: 4px; }
 
 /* Sidebar */
 #sidebar { width: 400px; min-width: 200px; max-width: 60vw; background: var(--bg-deep); display: flex; flex-direction: column; border-right: 2px solid var(--bg-btn); flex-shrink: 0; resize: horizontal; overflow: hidden; }
-#sidebar h2 { padding: 8px; font-size: 13px; background: var(--bg-header); text-align: center; display: flex; justify-content: center; align-items: center; gap: 8px; }
+#sidebar h2 { padding: 8px; font-size: 13px; background: var(--bg-header); display: flex; align-items: center; gap: 6px; }
 #sidebar h2 button { background: var(--bg-hover); color: var(--text); border: 1px solid var(--border-dim); cursor: pointer; font-size: 14px; width: 22px; height: 22px; line-height: 1; padding: 0; font-family: monospace; }
 #sidebar h2 button:hover { background: var(--border); }
 
@@ -152,11 +152,17 @@ textarea { border-radius: 4px; }
 #pal-zoom-in, #pal-zoom-out { background: var(--bg-btn); color: var(--text-label); border: 1px solid var(--border); cursor: pointer; padding: 6px 12px; font-size: 14px; font-family: monospace; }
 #pal-zoom-in:hover, #pal-zoom-out:hover { background: var(--bg-hover); }
 
-/* Layer controls */
-.layer-btn { min-width: 40px; }
-.layer-eye { font-size: 14px; padding: 2px 6px !important; min-width: 28px; opacity: 1; }
+/* Layer controls — multiswitch */
+.layer-switch { display: flex; flex-direction: column; gap: 1px; }
+.layer-row { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+.layer-row.active { border-color: var(--accent); }
+.layer-sel { flex: 1; padding: 3px 6px; background: var(--bg-btn); color: var(--text-dim); cursor: pointer; font-family: monospace; font-size: 11px; border: none; text-align: left; }
+.layer-row.active .layer-sel { background: var(--accent); color: var(--text); font-weight: bold; }
+.layer-sel:hover { background: var(--bg-hover); }
+.layer-eye { padding: 3px 5px; background: var(--bg-btn); color: var(--text); cursor: pointer; font-size: 12px; border: none; border-left: 1px solid var(--border); opacity: 1; }
 .layer-eye.hidden { opacity: 0.3; }
-.parallax-input { width: 60px; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); padding: 2px 4px; font-family: monospace; font-size: 11px; flex: 1; }
+.layer-eye:hover { background: var(--bg-hover); }
+.layer-plx { width: 48px; background: var(--bg-btn); color: var(--text); border: none; border-left: 1px solid var(--border); padding: 3px 4px; font-family: monospace; font-size: 10px; text-align: center; }
 
 /* Entity panel */
 .sidebar-panel { padding: 8px; background: var(--bg-panel); border-top: 1px solid var(--bg-btn); }
@@ -183,7 +189,7 @@ textarea { border-radius: 4px; }
 <body>
 
 <div id="sidebar">
-  <h2><button id="pal-zoom-out">-</button> <button class="pal-tab active" data-tab="main">Tiles</button><button class="pal-tab" data-tab="bg">BG</button> <button id="pal-zoom-in">+</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button></h2>
+  <h2><button class="pal-tab active" data-tab="main">Tiles</button><button class="pal-tab" data-tab="bg">BG</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button> <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
   <div id="palette"></div>
   <div id="band-editor">
     <h3>Color Remap</h3>
@@ -260,21 +266,22 @@ textarea { border-radius: 4px; }
   </div>
   <div class="tb-section">
     <div class="tb-label">Layers</div>
-    <div class="tb-row">
-      <button class="layer-btn" data-layer="0" data-tip="Background layer 1 (1)">BG1</button>
-      <button class="layer-btn active" data-layer="1" data-tip="Main layer (2)">Main</button>
-      <button class="layer-btn" data-layer="2" data-tip="Background layer 2 (3)">BG2</button>
-    </div>
-    <div class="tb-row">
-      <button class="layer-eye" data-layer="0" data-tip="Toggle BG1 visibility">&#128065;</button>
-      <button class="layer-eye" data-layer="1" data-tip="Toggle Main visibility">&#128065;</button>
-      <button class="layer-eye" data-layer="2" data-tip="Toggle BG2 visibility">&#128065;</button>
-    </div>
-    <div class="tb-row">
-      <label>Plx:</label>
-      <input type="number" class="parallax-input sidebar-input" data-layer="0" value="0.5" step="0.05" min="0" max="2" data-tip="BG1 parallax">
-      <input type="number" class="parallax-input sidebar-input" data-layer="1" value="1.0" step="0.05" min="0" max="2" data-tip="Main parallax">
-      <input type="number" class="parallax-input sidebar-input" data-layer="2" value="1.0" step="0.05" min="0" max="2" data-tip="BG2 parallax">
+    <div class="layer-switch">
+      <div class="layer-row" data-layer="0">
+        <button class="layer-sel" data-layer="0" data-tip="Background layer 1 (1)">BG1</button>
+        <input type="number" class="layer-plx parallax-input" data-layer="0" value="0.5" step="0.05" min="0" max="2" data-tip="BG1 parallax">
+        <button class="layer-eye" data-layer="0" data-tip="Toggle BG1 visibility">&#128065;</button>
+      </div>
+      <div class="layer-row active" data-layer="1">
+        <button class="layer-sel" data-layer="1" data-tip="Main layer (2)">Main</button>
+        <input type="number" class="layer-plx parallax-input" data-layer="1" value="1.0" step="0.05" min="0" max="2" data-tip="Main parallax">
+        <button class="layer-eye" data-layer="1" data-tip="Toggle Main visibility">&#128065;</button>
+      </div>
+      <div class="layer-row" data-layer="2">
+        <button class="layer-sel" data-layer="2" data-tip="Background layer 2 (3)">BG2</button>
+        <input type="number" class="layer-plx parallax-input" data-layer="2" value="1.0" step="0.05" min="0" max="2" data-tip="BG2 parallax">
+        <button class="layer-eye" data-layer="2" data-tip="Toggle BG2 visibility">&#128065;</button>
+      </div>
     </div>
   </div>
   <div class="tb-section">
@@ -848,8 +855,8 @@ function switchLayer(L) {
   render();
 }
 function updateLayerUI() {
-  document.querySelectorAll(".layer-btn").forEach((b, i) => {
-    b.classList.toggle("active", i === curLayer);
+  document.querySelectorAll(".layer-row").forEach(r => {
+    r.classList.toggle("active", parseInt(r.dataset.layer) === curLayer);
   });
 }
 function switchPaletteTab(tab) {
@@ -2096,7 +2103,7 @@ function decompressMap(bytes) {
 }
 
 document.getElementById("btn-save").addEventListener("click", saveLevel);
-document.querySelectorAll(".layer-btn").forEach(b => {
+document.querySelectorAll(".layer-sel").forEach(b => {
   b.addEventListener("click", () => switchLayer(parseInt(b.dataset.layer)));
 });
 document.querySelectorAll(".layer-eye").forEach(b => {
