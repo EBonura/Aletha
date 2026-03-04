@@ -311,10 +311,10 @@ function set_anim(a,s)
  if s then state=s end
 end
 
-function anim_done()
+function anim_done(m)
  local nf=acache[cur_anim].ai.nf
  return cur_frame>=nf
-  and anim_timer>=aspd[cur_anim]-1
+  and anim_timer>=aspd[cur_anim]-1-(m or 0)
 end
 
 function tick_anim()
@@ -1341,6 +1341,8 @@ function _update60()
    else
     set_anim(a_idle,"idle")
    end
+  elseif lr~=0 and anim_done(10) then
+   vx,facing=lr*1.5,lr set_anim(a_run,"run")
   end
 
  elseif s=="attack" then
@@ -1363,6 +1365,9 @@ function _update60()
     combo_idx=0
     set_anim(a_idle,"idle")
    end
+  elseif lr~=0 and not combo_queued and anim_done(10) then
+   end_attack() combo_idx=0
+   vx,facing=lr*1.5,lr set_anim(a_run,"run")
   end
 
  elseif s=="sweep" then
@@ -1391,6 +1396,9 @@ function _update60()
     else
      set_anim(a_idle,"idle")
     end
+   elseif lr~=0 and anim_done(10) then
+    end_attack()
+    vx,facing=lr*1.5,lr set_anim(a_run,"run")
    end
   end
 

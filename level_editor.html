@@ -1,67 +1,167 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="dark">
 <head>
 <meta charset="utf-8">
 <title>Ashen Edge Level Editor</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 <style>
+:root {
+  --bg-body: #1d2b53;
+  --bg-deep: #111;
+  --bg-panel: #1a1a1a;
+  --bg-header: #222;
+  --bg-btn: #333;
+  --bg-hover: #444;
+  --border: #555;
+  --border-dim: #666;
+  --text: #fff;
+  --text-label: #aaa;
+  --text-dim: #888;
+  --text-ok: #7e7;
+  --accent: #ff004d;
+  --accent-orange: #ff6600;
+  --accent-blue: #29adff;
+  --danger: #a00;
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #1d2b53; color: #fff; font-family: monospace; display: flex; height: 100vh; overflow: hidden; user-select: none; }
-#sidebar { width: 400px; background: #111; display: flex; flex-direction: column; border-right: 2px solid #333; flex-shrink: 0; }
-#sidebar h2 { padding: 8px; font-size: 13px; background: #222; text-align: center; display: flex; justify-content: center; align-items: center; gap: 8px; }
-#sidebar h2 button { background: #444; color: #fff; border: 1px solid #666; cursor: pointer; font-size: 14px; width: 22px; height: 22px; line-height: 1; padding: 0; font-family: monospace; }
-#sidebar h2 button:hover { background: #555; }
+body { background: var(--bg-body); color: var(--text); font-family: monospace; display: flex; height: 100vh; overflow: hidden; user-select: none; max-width: none; padding: 0; }
+/* Pico overrides for compact tool UI */
+button, input, select, textarea { font-size: inherit; margin: 0; }
+h2, h3, label, p { margin: 0; }
+button { --pico-font-size: 11px; padding: 4px 10px; border-radius: 4px; width: auto; }
+input[type=number] { --pico-font-size: 11px; padding: 2px 4px; width: auto; height: auto; border-radius: 4px; }
+input[type=range] { margin: 0; padding: 0; height: auto; }
+textarea { border-radius: 4px; }
+
+/* Sidebar */
+#sidebar { width: 400px; min-width: 200px; max-width: 60vw; background: var(--bg-deep); display: flex; flex-direction: column; border-right: 2px solid var(--bg-btn); flex-shrink: 0; resize: horizontal; overflow: hidden; }
+#sidebar h2 { padding: 8px; font-size: 13px; background: var(--bg-header); text-align: center; display: flex; justify-content: center; align-items: center; gap: 8px; }
+#sidebar h2 button { background: var(--bg-hover); color: var(--text); border: 1px solid var(--border-dim); cursor: pointer; font-size: 14px; width: 22px; height: 22px; line-height: 1; padding: 0; font-family: monospace; }
+#sidebar h2 button:hover { background: var(--border); }
+
+/* Palette */
 #palette { flex: 1; overflow-y: auto; padding: 4px; }
 .tile-group { margin-bottom: 8px; }
-.tile-group-label { font-size: 11px; color: #aaa; padding: 2px 4px; }
+.tile-group-label { font-size: 11px; color: var(--text-label); padding: 2px 4px; }
 .tile-grid { display: grid; gap: 1px; padding: 2px; }
 .tile-btn { width: 40px; height: 40px; border: 2px solid transparent; cursor: pointer; position: relative; image-rendering: pixelated; background-color: #1a1a2a; }
 .tile-spacer { width: 40px; height: 40px; }
-.tile-btn.selected { border-color: #ff004d; }
+.tile-btn.selected { border-color: var(--accent); }
 .tile-btn canvas { width: 100%; height: 100%; image-rendering: pixelated; }
 .tile-flag { position: absolute; bottom: 0; right: 0; font-size: 8px; background: rgba(0,0,0,0.7); color: #ff0; padding: 0 2px; pointer-events: none; }
-#flag-editor { padding: 8px; background: #1a1a1a; border-top: 1px solid #333; }
+
+/* Flag editor */
+#flag-editor { padding: 8px; background: var(--bg-panel); border-top: 1px solid var(--bg-btn); }
 #flag-editor label { font-size: 11px; }
 #flag-buttons { display: flex; gap: 3px; margin-top: 4px; }
-#flag-buttons button { width: 24px; height: 24px; font-size: 12px; cursor: pointer; border: 1px solid #555; background: #333; color: #fff; }
-#flag-buttons button.active { background: #ff004d; border-color: #ff004d; }
-#spawn-info { padding: 4px 8px; font-size: 11px; color: #0f0; background: #1a1a1a; border-top: 1px solid #333; }
-#toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: #222; border-bottom: 1px solid #333; font-size: 12px; flex-wrap: wrap; }
-#toolbar button { padding: 4px 10px; background: #333; color: #fff; border: 1px solid #555; cursor: pointer; font-family: monospace; font-size: 11px; }
-#toolbar button.active { background: #ff004d; border-color: #ff004d; }
-#toolbar button:hover { background: #444; }
-#toolbar input[type=number] { width: 50px; background: #333; color: #fff; border: 1px solid #555; padding: 2px 4px; font-family: monospace; }
-#toolbar label { color: #aaa; }
-#toolbar .sep { width: 1px; height: 20px; background: #444; }
-#main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#flag-buttons button { width: 24px; height: 24px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: var(--bg-btn); color: var(--text); }
+#flag-buttons button.active { background: var(--accent); border-color: var(--accent); }
+#spawn-info { padding: 4px 8px; font-size: 11px; color: #0f0; background: var(--bg-panel); border-top: 1px solid var(--bg-btn); }
+
+/* Toolbar (right sidebar) */
+#toolbar { width: 180px; background: var(--bg-deep); display: flex; flex-direction: column; border-left: 1px solid var(--bg-btn); flex-shrink: 0; overflow-y: auto; padding: 6px; gap: 2px; font-size: 11px; }
+#toolbar button { padding: 4px 8px; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); cursor: pointer; font-family: monospace; font-size: 11px; flex: 1; }
+#toolbar button.active { background: var(--accent); border-color: var(--accent); }
+#toolbar button:hover { background: var(--bg-hover); }
+#toolbar input[type=number] { width: 100%; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); padding: 2px 4px; font-family: monospace; font-size: 11px; }
+#toolbar label { color: var(--text-label); font-size: 11px; white-space: nowrap; }
+.tb-section { background: rgba(255,255,255,0.03); border-radius: 4px; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.tb-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.tb-row { display: flex; gap: 3px; align-items: center; }
+.btn-danger { background: var(--danger) !important; border-color: var(--danger) !important; width: 100%; }
+.btn-danger:hover { background: #c00 !important; }
+.mode-btn-disabled { opacity: 0.4; }
+
+/* Tooltips */
+#tooltip {
+  position: fixed;
+  background: var(--bg-header);
+  color: var(--text);
+  font-size: 11px;
+  font-family: monospace;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 999;
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  display: none;
+}
+
+/* Main area (canvas fills between sidebars) */
+#main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 #canvas-wrap { flex: 1; overflow: hidden; position: relative; cursor: crosshair; }
 #map-canvas { position: absolute; top: 0; left: 0; image-rendering: pixelated; }
-#status { padding: 4px 12px; background: #111; font-size: 11px; color: #aaa; border-top: 1px solid #333; display: flex; gap: 16px; }
+
+/* Status (in right sidebar) */
+.tb-spacer { flex: 1; }
+.tb-status { margin-top: auto; }
+.tb-info { font-size: 10px; color: var(--text-dim); padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zoom-btn { padding: 2px 6px !important; flex: 0 !important; }
+#zoom-slider { flex: 1; margin: 0; padding: 0; }
+#st-zoom { font-size: 10px; color: var(--text-label); white-space: nowrap; }
+#st-mem { color: var(--text-ok); }
+#st-cart { color: var(--text-ok); font-size: 10px; }
+
+/* Export modal */
 #export-modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
 #export-modal.show { display: flex; }
-#export-content { background: #222; padding: 20px; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+#export-content { background: var(--bg-header); padding: 20px; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
 #export-content h3 { margin-bottom: 10px; }
-#export-content textarea { width: 100%; height: 200px; background: #111; color: #0f0; border: 1px solid #555; font-family: monospace; font-size: 11px; padding: 8px; }
-#export-content button { margin-top: 8px; padding: 6px 16px; background: #ff004d; color: #fff; border: none; cursor: pointer; font-family: monospace; }
-#band-editor { padding: 6px; background: #1a1a1a; border-top: 1px solid #333; }
-#band-editor h3 { font-size: 11px; color: #aaa; margin-bottom: 4px; }
+#export-content textarea { width: 100%; height: 200px; background: var(--bg-deep); color: #0f0; border: 1px solid var(--border); font-family: monospace; font-size: 11px; padding: 8px; }
+#export-content button { margin-top: 8px; padding: 6px 16px; background: var(--accent); color: var(--text); border: none; cursor: pointer; font-family: monospace; }
+#export-info { margin-bottom: 8px; font-size: 12px; color: var(--text-label); }
+#export-close { background: var(--border) !important; margin-left: 8px; }
+
+/* Band editor */
+#band-editor { padding: 6px; background: var(--bg-panel); border-top: 1px solid var(--bg-btn); }
+#band-editor h3 { font-size: 11px; color: var(--text-label); margin-bottom: 4px; }
 .band-row { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
-.band-label { font-size: 10px; color: #888; width: 52px; text-align: right; flex-shrink: 0; }
-.band-preview { width: 16px; height: 16px; border: 1px solid #444; flex-shrink: 0; }
+.band-label { font-size: 10px; color: var(--text-dim); width: 52px; text-align: right; flex-shrink: 0; }
+.band-preview { width: 16px; height: 16px; border: 1px solid var(--bg-hover); flex-shrink: 0; }
 .band-colors { display: flex; gap: 1px; flex-wrap: wrap; }
 .band-swatch { width: 16px; height: 16px; cursor: pointer; border: 2px solid transparent; }
-.band-swatch:hover { border-color: #fff; }
-.band-swatch.active { border-color: #ff004d; }
-#toast { position:fixed; top:12px; left:50%; transform:translateX(-50%); background:#ff004d; color:#fff; padding:6px 16px; border-radius:4px; font-size:12px; opacity:0; transition:opacity 0.2s; pointer-events:none; z-index:200; }
+.band-swatch:hover { border-color: var(--text); }
+.band-swatch.active { border-color: var(--accent); }
+
+/* Toast */
+#toast { position:fixed; top:12px; left:50%; transform:translateX(-50%); background:var(--accent); color:var(--text); padding:6px 16px; border-radius:4px; font-size:12px; opacity:0; transition:opacity 0.2s; pointer-events:none; z-index:200; }
 #toast.show { opacity:1; }
-.pal-tab { background: #333; color: #aaa; border: 1px solid #555; cursor: pointer; padding: 6px 14px; font-size: 14px; font-family: monospace; }
-.pal-tab.active { background: #ff004d; color: #fff; border-color: #ff004d; }
-.pal-tab:hover { background: #444; }
-#pal-zoom-in, #pal-zoom-out { background: #333; color: #aaa; border: 1px solid #555; cursor: pointer; padding: 6px 12px; font-size: 14px; font-family: monospace; }
-#pal-zoom-in:hover, #pal-zoom-out:hover { background: #444; }
+
+/* Palette tabs */
+.pal-tab { background: var(--bg-btn); color: var(--text-label); border: 1px solid var(--border); cursor: pointer; padding: 6px 14px; font-size: 14px; font-family: monospace; }
+.pal-tab.active { background: var(--accent); color: var(--text); border-color: var(--accent); }
+.pal-tab:hover { background: var(--bg-hover); }
+#pal-zoom-in, #pal-zoom-out { background: var(--bg-btn); color: var(--text-label); border: 1px solid var(--border); cursor: pointer; padding: 6px 12px; font-size: 14px; font-family: monospace; }
+#pal-zoom-in:hover, #pal-zoom-out:hover { background: var(--bg-hover); }
+
+/* Layer controls */
 .layer-btn { min-width: 40px; }
 .layer-eye { font-size: 14px; padding: 2px 6px !important; min-width: 28px; opacity: 1; }
 .layer-eye.hidden { opacity: 0.3; }
-.parallax-input { width: 45px; background: #333; color: #fff; border: 1px solid #555; padding: 2px 4px; font-family: monospace; font-size: 11px; }
+.parallax-input { width: 60px; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); padding: 2px 4px; font-family: monospace; font-size: 11px; flex: 1; }
+
+/* Entity panel */
+.sidebar-panel { padding: 8px; background: var(--bg-panel); border-top: 1px solid var(--bg-btn); }
+.ent-type-grid { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.ent-type-btn { background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); cursor: pointer; padding: 3px 8px; font-family: monospace; font-size: 11px; }
+.ent-type-btn:hover { background: var(--bg-hover); }
+.sidebar-hint { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+.sidebar-label { font-size: 11px; }
+.sidebar-input { width: 50px; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); padding: 2px; font-family: monospace; }
+.sidebar-input-sm { width: 40px; }
+#entity-delete { margin-left: 8px; background: var(--danger); color: var(--text); border: none; cursor: pointer; padding: 3px 8px; font-family: monospace; font-size: 11px; }
+#entity-delete:hover { background: #c00; }
+#entity-cost-label { margin-left: 8px; }
+#entity-text-edit { margin-top: 4px; }
+.glyph-grid { display: flex; gap: 2px; margin: 3px 0; }
+.glyph-btn { width: 24px; height: 22px; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); cursor: pointer; font-size: 13px; padding: 0; }
+.glyph-btn:hover { background: var(--bg-hover); }
+.glyph-btn-o { color: var(--accent); font-weight: bold; }
+.glyph-btn-x { color: var(--accent-blue); font-weight: bold; }
+#entity-text { width: 100%; background: var(--bg-btn); color: var(--text); border: 1px solid var(--border); padding: 4px; font-family: monospace; font-size: 11px; resize: vertical; }
+.ent-size-row { display: flex; gap: 8px; margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -78,104 +178,149 @@ body { background: #1d2b53; color: #fff; font-family: monospace; display: flex; 
     <div id="flag-buttons"></div>
   </div>
   <div id="spawn-info">Spawn: not set</div>
-  <div id="entity-panel" style="display:none; padding:8px; background:#1a1a1a; border-top:1px solid #333;">
-    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">
-      <button class="ent-type-btn active" data-etype="1" style="background:#ff6600;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Door</button>
-      <button class="ent-type-btn" data-etype="2" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Switch</button>
-      <button class="ent-type-btn" data-etype="3" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Spider</button>
-      <button class="ent-type-btn" data-etype="4" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">WheelBot</button>
-      <button class="ent-type-btn" data-etype="5" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">HellBot</button>
-      <button class="ent-type-btn" data-etype="6" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Bonfire</button>
-      <button class="ent-type-btn" data-etype="7" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Torch</button>
-      <button class="ent-type-btn" data-etype="8" style="background:#333;color:#fff;border:1px solid #555;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">TextZone</button>
+  <div id="entity-panel" class="sidebar-panel" style="display:none;">
+    <div class="ent-type-grid">
+      <button class="ent-type-btn active" data-etype="1" style="background:#ff6600">Door</button>
+      <button class="ent-type-btn" data-etype="2">Switch</button>
+      <button class="ent-type-btn" data-etype="3">Spider</button>
+      <button class="ent-type-btn" data-etype="4">WheelBot</button>
+      <button class="ent-type-btn" data-etype="5">HellBot</button>
+      <button class="ent-type-btn" data-etype="6">Bonfire</button>
+      <button class="ent-type-btn" data-etype="7">Torch</button>
+      <button class="ent-type-btn" data-etype="8">TextZone</button>
     </div>
-    <div id="entity-info" style="font-size:10px;color:#888;margin-top:4px;">Click to place entity</div>
+    <div id="entity-info" class="sidebar-hint">Click to place entity</div>
   </div>
-  <div id="entity-props" style="display:none; padding:8px; background:#1a1a1a; border-top:1px solid #333;">
-    <label style="font-size:11px">Group: <input type="number" id="entity-group" min="1" max="255" value="1"
-      style="width:50px;background:#333;color:#fff;border:1px solid #555;padding:2px;font-family:monospace;"></label>
-    <label id="entity-cost-label" style="font-size:11px;margin-left:8px;display:none;">Cost: <input type="number" id="entity-cost" min="0" max="255" value="0"
-      style="width:40px;background:#333;color:#fff;border:1px solid #555;padding:2px;font-family:monospace;"></label>
-    <button id="entity-delete" style="margin-left:8px;background:#a00;color:#fff;border:none;cursor:pointer;padding:3px 8px;font-family:monospace;font-size:11px;">Delete</button>
-    <div id="entity-text-edit" style="display:none;margin-top:4px;">
-      <div style="display:flex;gap:8px;margin-bottom:4px;">
-        <label style="font-size:11px">W: <input type="number" id="entity-ew" min="1" max="255" value="1"
-          style="width:40px;background:#333;color:#fff;border:1px solid #555;padding:2px;font-family:monospace;"></label>
-        <label style="font-size:11px">H: <input type="number" id="entity-eh" min="1" max="255" value="1"
-          style="width:40px;background:#333;color:#fff;border:1px solid #555;padding:2px;font-family:monospace;"></label>
+  <div id="entity-props" class="sidebar-panel" style="display:none;">
+    <label class="sidebar-label">Group: <input type="number" id="entity-group" min="1" max="255" value="1" class="sidebar-input"></label>
+    <label id="entity-cost-label" class="sidebar-label" style="display:none;">Cost: <input type="number" id="entity-cost" min="0" max="255" value="0" class="sidebar-input sidebar-input-sm"></label>
+    <button id="entity-delete">Delete</button>
+    <div id="entity-text-edit" style="display:none;">
+      <div class="ent-size-row">
+        <label class="sidebar-label">W: <input type="number" id="entity-ew" min="1" max="255" value="1" class="sidebar-input sidebar-input-sm"></label>
+        <label class="sidebar-label">H: <input type="number" id="entity-eh" min="1" max="255" value="1" class="sidebar-input sidebar-input-sm"></label>
       </div>
-      <label style="font-size:11px">Text:</label>
-      <div style="display:flex;gap:2px;margin:3px 0;">
-        <button class="glyph-btn" data-char="⬅" title="Left" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">◀</button>
-        <button class="glyph-btn" data-char="⬆" title="Up" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">▲</button>
-        <button class="glyph-btn" data-char="➡" title="Right" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">▶</button>
-        <button class="glyph-btn" data-char="⬇" title="Down" style="width:24px;height:22px;background:#333;color:#fff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;">▼</button>
-        <button class="glyph-btn" data-char="🅾" title="O button" style="width:24px;height:22px;background:#333;color:#ff004d;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;font-weight:bold;">O</button>
-        <button class="glyph-btn" data-char="❎" title="X button" style="width:24px;height:22px;background:#333;color:#29adff;border:1px solid #555;cursor:pointer;font-size:13px;padding:0;font-weight:bold;">X</button>
+      <label class="sidebar-label">Text:</label>
+      <div class="glyph-grid">
+        <button class="glyph-btn" data-char="⬅" title="Left">◀</button>
+        <button class="glyph-btn" data-char="⬆" title="Up">▲</button>
+        <button class="glyph-btn" data-char="➡" title="Right">▶</button>
+        <button class="glyph-btn" data-char="⬇" title="Down">▼</button>
+        <button class="glyph-btn glyph-btn-o" data-char="🅾" title="O button">O</button>
+        <button class="glyph-btn glyph-btn-x" data-char="❎" title="X button">X</button>
       </div>
-      <textarea id="entity-text" rows="3" style="width:100%;background:#333;color:#fff;border:1px solid #555;padding:4px;font-family:monospace;font-size:11px;resize:vertical;" placeholder="Zone text (use \n for newlines)"></textarea>
+      <textarea id="entity-text" rows="3" placeholder="Zone text (use \n for newlines)"></textarea>
     </div>
   </div>
 </div>
 
 <div id="main">
-  <div id="toolbar">
-    <button id="tool-pencil" class="active" title="Pencil (B)">&#9998; Pencil</button>
-    <button id="tool-rect" title="Rectangle (T)">&#9634; Rect</button>
-    <button id="tool-fill" title="Flood Fill (G)">&#9681; Fill</button>
-    <button id="tool-eraser" title="Eraser (E)">&#9003; Eraser</button>
-    <button id="tool-spawn" title="Spawn Point (P)">&#9679; Spawn</button>
-    <button id="tool-select" title="Select (S)">&#9744; Select</button>
-    <button id="tool-entity" title="Entity (N)">&#9733; Entity</button>
-    <div class="sep"></div>
-    <button id="mode-random" title="Random tile from selection" style="opacity:0.4">Random</button>
-    <button id="mode-stamp" title="Stamp pattern from selection" style="opacity:0.4">Stamp</button>
-    <div class="sep"></div>
-    <label>W:</label><input type="number" id="map-w" value="128" min="1" max="1024">
-    <label>H:</label><input type="number" id="map-h" value="32" min="1" max="512">
-    <button id="btn-resize">Resize</button>
-    <div class="sep"></div>
-    <button id="btn-grid" title="Toggle Grid (Tab)">Grid: ON</button>
-    <button id="btn-flags-overlay" title="Toggle flag overlay (F)">Flags: OFF</button>
-    <div class="sep"></div>
-    <button id="btn-save" title="⌘S">Save</button>
-    <div class="sep"></div>
-    <button class="layer-btn" data-layer="0" title="Background (1)">BG</button>
-    <button class="layer-btn active" data-layer="1" title="Main layer (2)">Main</button>
-    <button class="layer-eye" data-layer="0" title="Toggle BG visibility">&#128065;</button>
-    <button class="layer-eye" data-layer="1" title="Toggle Main visibility">&#128065;</button>
-    <label>Parallax:</label>
-    <label style="font-size:10px">BG</label><input type="number" class="parallax-input" data-layer="0" value="0.5" step="0.05" min="0" max="2" title="BG scroll speed">
-    <button id="btn-load" title="Ctrl+O">Load JSON</button>
-    <button id="btn-export" title="Ctrl+E">Export</button>
-    <span id="st-cart" style="color:#7e7;font-size:11px;"></span>
-    <div class="sep"></div>
-    <button id="btn-undo" title="Ctrl+Z">Undo</button>
-    <button id="btn-redo" title="Ctrl+Shift+Z">Redo</button>
-    <div class="sep"></div>
-    <button id="btn-clear" style="background:#a00">Clear All</button>
-  </div>
   <div id="canvas-wrap">
     <canvas id="map-canvas"></canvas>
   </div>
-  <div id="status">
-    <span id="st-pos">-</span>
-    <span id="st-tile">-</span>
-    <button id="zoom-out" style="background:#333;color:#aaa;border:1px solid #555;cursor:pointer;padding:2px 8px;font-family:monospace">-</button><input id="zoom-slider" type="range" min="5" max="60" value="15" step="1" style="width:80px;vertical-align:middle"><button id="zoom-in" style="background:#333;color:#aaa;border:1px solid #555;cursor:pointer;padding:2px 8px;font-family:monospace">+</button><span id="st-zoom" style="font-size:11px">1.5x</span>
-    <span id="st-size">-</span>
-    <span id="st-xform">Xform: none</span>
-    <span id="st-mode">Mode: single</span>
-    <span id="st-mem" style="color:#7e7">-</span>
+</div>
+
+<div id="toolbar">
+  <div class="tb-section">
+    <div class="tb-label">Tools</div>
+    <div class="tb-row">
+      <button id="tool-pencil" class="active" data-tip="Pencil (B)">&#9998;</button>
+      <button id="tool-rect" data-tip="Rectangle (T)">&#9634;</button>
+      <button id="tool-fill" data-tip="Flood Fill (G)">&#9681;</button>
+      <button id="tool-eraser" data-tip="Eraser (E)">&#9003;</button>
+    </div>
+    <div class="tb-row">
+      <button id="tool-spawn" data-tip="Spawn Point (P)">&#9679;</button>
+      <button id="tool-select" data-tip="Select (S)">&#9744;</button>
+      <button id="tool-entity" data-tip="Entity (N)">&#9733;</button>
+    </div>
+  </div>
+  <div class="tb-section">
+    <div class="tb-label">Mode</div>
+    <div class="tb-row">
+      <button id="mode-random" class="mode-btn-disabled" data-tip="Random tile from selection">Rnd</button>
+      <button id="mode-stamp" class="mode-btn-disabled" data-tip="Stamp pattern from selection">Stp</button>
+    </div>
+  </div>
+  <div class="tb-section">
+    <div class="tb-label">Layers</div>
+    <div class="tb-row">
+      <button class="layer-btn" data-layer="0" data-tip="Background layer (1)">BG</button>
+      <button class="layer-btn active" data-layer="1" data-tip="Main layer (2)">Main</button>
+    </div>
+    <div class="tb-row">
+      <button class="layer-eye" data-layer="0" data-tip="Toggle BG visibility">&#128065;</button>
+      <button class="layer-eye" data-layer="1" data-tip="Toggle Main visibility">&#128065;</button>
+    </div>
+    <div class="tb-row">
+      <label>Plx:</label>
+      <input type="number" class="parallax-input" data-layer="0" value="0.5" step="0.05" min="0" max="2" data-tip="BG scroll speed">
+    </div>
+  </div>
+  <div class="tb-section">
+    <div class="tb-label">View</div>
+    <div class="tb-row">
+      <button id="btn-grid" class="active" data-tip="Toggle Grid (Tab)">Grid</button>
+      <button id="btn-flags-overlay" data-tip="Toggle Flags (F)">Flags</button>
+    </div>
+  </div>
+  <div class="tb-section">
+    <div class="tb-label">File</div>
+    <div class="tb-row">
+      <button id="btn-save" data-tip="Save (⌘S)">Save</button>
+      <button id="btn-load" data-tip="Load JSON (⌘O)">Load</button>
+    </div>
+    <div class="tb-row">
+      <button id="btn-export" data-tip="Export (⌘E)">Export</button>
+    </div>
+    <span id="st-cart"></span>
+  </div>
+  <div class="tb-section">
+    <div class="tb-label">History</div>
+    <div class="tb-row">
+      <button id="btn-undo" data-tip="Undo (⌘Z)">Undo</button>
+      <button id="btn-redo" data-tip="Redo (⌘⇧Z)">Redo</button>
+    </div>
+  </div>
+  <div class="tb-section">
+    <div class="tb-label">Map Size</div>
+    <div class="tb-row">
+      <label>W:</label><input type="number" id="map-w" value="128" min="1" max="1024">
+    </div>
+    <div class="tb-row">
+      <label>H:</label><input type="number" id="map-h" value="32" min="1" max="512">
+    </div>
+    <button id="btn-resize">Resize</button>
+  </div>
+  <div class="tb-section">
+    <button id="btn-clear" class="btn-danger">Clear All</button>
+  </div>
+  <div class="tb-spacer"></div>
+  <div class="tb-section tb-status">
+    <div class="tb-label">Zoom</div>
+    <div class="tb-row">
+      <button id="zoom-out" class="zoom-btn">-</button>
+      <input id="zoom-slider" type="range" min="5" max="60" value="15" step="1">
+      <button id="zoom-in" class="zoom-btn">+</button>
+      <span id="st-zoom">1.5x</span>
+    </div>
+    <div class="tb-label">Info</div>
+    <div class="tb-info"><span id="st-pos">-</span></div>
+    <div class="tb-info"><span id="st-tile">-</span></div>
+    <div class="tb-info"><span id="st-size">-</span></div>
+    <div class="tb-info"><span id="st-xform">Xform: none</span></div>
+    <div class="tb-info"><span id="st-mode">Mode: single</span></div>
+    <div class="tb-info"><span id="st-mem">-</span></div>
   </div>
 </div>
 
 <div id="export-modal">
   <div id="export-content">
     <h3>Export Compressed Map</h3>
-    <p id="export-info" style="margin-bottom:8px;font-size:12px;color:#aaa;"></p>
+    <p id="export-info"></p>
     <textarea id="export-hex" readonly></textarea>
     <button id="export-copy">Copy to Clipboard</button>
-    <button id="export-close" style="background:#555;margin-left:8px;">Close</button>
+    <button id="export-close">Close</button>
   </div>
 </div>
 
@@ -294,8 +439,8 @@ function updateModeButtons() {
   const multi = selectedTiles.length > 1;
   document.getElementById("mode-random").classList.toggle("active", placementMode === "random");
   document.getElementById("mode-stamp").classList.toggle("active", placementMode === "stamp");
-  document.getElementById("mode-random").style.opacity = multi ? "1" : "0.4";
-  document.getElementById("mode-stamp").style.opacity = multi ? "1" : "0.4";
+  document.getElementById("mode-random").classList.toggle("mode-btn-disabled", !multi);
+  document.getElementById("mode-stamp").classList.toggle("mode-btn-disabled", !multi);
 }
 function setPlacementMode(m) { placementMode = m; updateModeButtons(); document.getElementById("st-mode").textContent = "Mode: " + m; }
 // Tileset helpers: return the correct tileset arrays for a given layer
@@ -1294,8 +1439,8 @@ document.getElementById("entity-delete").addEventListener("click", () => {
 document.getElementById("mode-random").addEventListener("click", () => { if (selectedTiles.length > 1) setPlacementMode(placementMode === "random" ? "single" : "random"); });
 document.getElementById("mode-stamp").addEventListener("click", () => { if (selectedTiles.length > 1) setPlacementMode(placementMode === "stamp" ? "single" : "stamp"); });
 
-function toggleGrid() { showGrid=!showGrid;document.getElementById("btn-grid").textContent="Grid: "+(showGrid?"ON":"OFF");render(); }
-function toggleFlagsOverlay() { showFlagsOverlay=!showFlagsOverlay;document.getElementById("btn-flags-overlay").textContent="Flags: "+(showFlagsOverlay?"ON":"OFF");render(); }
+function toggleGrid() { showGrid=!showGrid;const b=document.getElementById("btn-grid");b.textContent="Grid";b.classList.toggle("active",showGrid);render(); }
+function toggleFlagsOverlay() { showFlagsOverlay=!showFlagsOverlay;const b=document.getElementById("btn-flags-overlay");b.textContent="Flags";b.classList.toggle("active",showFlagsOverlay);render(); }
 document.getElementById("btn-grid").addEventListener("click", toggleGrid);
 document.getElementById("btn-flags-overlay").addEventListener("click", toggleFlagsOverlay);
 
