@@ -1309,7 +1309,7 @@ def read_level_json(json_path):
     """Read level data from level_data.json.
     Returns (map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, flags, band_colors, parallax)
     where map_grids[layer][y][x] = tile_index (255=empty), xform_grids[layer][y][x] = packed xform.
-    3 layers: 0=BG, 1=Main, 2=FG."""
+    3 layers: 0=BG1, 1=Main, 2=BG2."""
     with open(json_path) as f:
         data = json.load(f)
 
@@ -1518,7 +1518,7 @@ def build_level_data(tileset, bg_tileset, map_data):
     """
     map_w, map_h, map_grids, xform_grids, spawn_x, spawn_y, editor_flags, band_colors, bg_band_colors, parallax, entities = map_data
     num_layers = len(map_grids)
-    # Layer 0 = BG (uses bg_tileset), Layer 1 = Main (uses tileset), Layer 2 = FG (uses tileset)
+    # Layer 0 = BG1 (bg_tileset), Layer 1 = Main (tileset), Layer 2 = BG2 (tileset)
     layer_tilesets = [bg_tileset, tileset, tileset]
 
     # Use band colors from level data if available
@@ -1526,7 +1526,7 @@ def build_level_data(tileset, bg_tileset, map_data):
     if band_colors and len(band_colors) == len(BAND_COLORS):
         BAND_COLORS = band_colors
     BG_BAND_COLORS = list(bg_band_colors) if bg_band_colors and len(bg_band_colors) == len(BAND_COLORS) else list(BAND_COLORS)
-    layer_band_colors = [BG_BAND_COLORS, BAND_COLORS, BAND_COLORS]  # layer 0=BG, 1=Main, 2=FG
+    layer_band_colors = [BG_BAND_COLORS, BAND_COLORS, BAND_COLORS]  # layer 0=BG1, 1=Main, 2=BG2
 
     print(f"\n=== LEVEL DATA ===")
     print(f"  Map size: {map_w}x{map_h} ({map_w*map_h} cells), {num_layers} layers")
@@ -1597,11 +1597,11 @@ def build_level_data(tileset, bg_tileset, map_data):
     process_layer_tiles(1)  # Main → sprite sheet
     num_spr_tiles = len(rt_tiles)
     process_layer_tiles(0)  # BG → user memory
-    process_layer_tiles(2)  # FG → user memory
+    process_layer_tiles(2)  # BG2 → user memory
     num_rt = len(rt_tiles)
 
-    print(f"  BG: {len(used_base[0]|used_rot90[0])} editor tiles, Main: {len(used_base[1]|used_rot90[1])} editor tiles, FG: {len(used_base[2]|used_rot90[2])} editor tiles")
-    print(f"  Runtime tiles: {num_rt} ({num_spr_tiles} spr + {num_rt - num_spr_tiles} bg+fg)")
+    print(f"  BG1: {len(used_base[0]|used_rot90[0])} editor tiles, Main: {len(used_base[1]|used_rot90[1])} editor tiles, BG2: {len(used_base[2]|used_rot90[2])} editor tiles")
+    print(f"  Runtime tiles: {num_rt} ({num_spr_tiles} spr + {num_rt - num_spr_tiles} bg)")
 
     # Sprite sheet: 128x128px = 8x8 grid of 16x16 tiles = 64 max
     if num_spr_tiles > 64:
@@ -1687,7 +1687,7 @@ def build_level_data(tileset, bg_tileset, map_data):
             for x in range(map_w):
                 row.append(editor_to_cell(L, mg[y][x], xg[y][x]))
             cell_grid.append(row)
-        label = ['BG', 'Main', 'FG'][L]
+        label = ['BG1', 'Main', 'BG2'][L]
         data, desc = encode_layer(cell_grid, map_w, map_h, label)
         layer_data.append(data)
         print(f"  Layer {L} ({label}): {desc}")

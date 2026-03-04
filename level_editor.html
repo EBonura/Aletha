@@ -261,20 +261,20 @@ textarea { border-radius: 4px; }
   <div class="tb-section">
     <div class="tb-label">Layers</div>
     <div class="tb-row">
-      <button class="layer-btn" data-layer="0" data-tip="Background layer (1)">BG</button>
+      <button class="layer-btn" data-layer="0" data-tip="Background layer 1 (1)">BG1</button>
       <button class="layer-btn active" data-layer="1" data-tip="Main layer (2)">Main</button>
-      <button class="layer-btn" data-layer="2" data-tip="Foreground layer (3)">FG</button>
+      <button class="layer-btn" data-layer="2" data-tip="Background layer 2 (3)">BG2</button>
     </div>
     <div class="tb-row">
-      <button class="layer-eye" data-layer="0" data-tip="Toggle BG visibility">&#128065;</button>
+      <button class="layer-eye" data-layer="0" data-tip="Toggle BG1 visibility">&#128065;</button>
       <button class="layer-eye" data-layer="1" data-tip="Toggle Main visibility">&#128065;</button>
-      <button class="layer-eye" data-layer="2" data-tip="Toggle FG visibility">&#128065;</button>
+      <button class="layer-eye" data-layer="2" data-tip="Toggle BG2 visibility">&#128065;</button>
     </div>
     <div class="tb-row">
       <label>Plx:</label>
-      <input type="number" class="parallax-input sidebar-input" data-layer="0" value="0.5" step="0.05" min="0" max="2" data-tip="BG parallax">
+      <input type="number" class="parallax-input sidebar-input" data-layer="0" value="0.5" step="0.05" min="0" max="2" data-tip="BG1 parallax">
       <input type="number" class="parallax-input sidebar-input" data-layer="1" value="1.0" step="0.05" min="0" max="2" data-tip="Main parallax">
-      <input type="number" class="parallax-input sidebar-input" data-layer="2" value="1.0" step="0.05" min="0" max="2" data-tip="FG parallax">
+      <input type="number" class="parallax-input sidebar-input" data-layer="2" value="1.0" step="0.05" min="0" max="2" data-tip="BG2 parallax">
     </div>
   </div>
   <div class="tb-section">
@@ -384,7 +384,7 @@ const BG_TILE_ROWS = 9;
 // State
 let mapW = 128, mapH = 32;
 const NUM_LAYERS = 3;
-const LAYER_NAMES = ["BG","Main","FG"];
+const LAYER_NAMES = ["BG1","Main","BG2"];
 let layers = [null,null,null];
 let curLayer = 1;
 let layerVisible = [true,true,true];
@@ -1899,7 +1899,7 @@ function compressMap() {
 function estimateMapMemory() {
   const TRANS = 14;
 
-  const layerColors = [bgBandColors, bandColors, bandColors]; // layer 0=BG, 1=Main, 2=FG
+  const layerColors = [bgBandColors, bandColors, bandColors]; // layer 0=BG1, 1=Main, 2=BG2
   function getTilePixels(lumArr, ti, L) {
     const lums = lumArr[ti];
     if (!lums) return null;
