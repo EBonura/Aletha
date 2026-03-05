@@ -37,6 +37,21 @@ struct LevelJson {
     #[serde(rename = "mapBgColor")]
     map_bg_color: Option<u8>,
     texts: Option<Vec<String>>,
+    #[serde(rename = "tileEdits")]
+    tile_edits: Option<HashMap<String, TileEditJson>>,
+    #[serde(rename = "bgTileEdits")]
+    bg_tile_edits: Option<HashMap<String, TileEditJson>>,
+}
+
+#[derive(Deserialize)]
+struct TileEditLum {
+    lum: u8,
+    a: u8,
+}
+
+#[derive(Deserialize)]
+struct TileEditJson {
+    lum: Vec<TileEditLum>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +86,7 @@ pub struct MapData {
     pub entities: Vec<EntityJson>,
     pub map_bg_color: u8,
     pub zone_texts: Vec<String>,
+    pub tile_edits: HashMap<String, Vec<(u8, u8)>>,  // name -> [(lum, alpha)]
 }
 
 pub fn read_level_json(json_path: &Path) -> Option<MapData> {
@@ -167,6 +183,17 @@ pub fn read_level_json(json_path: &Path) -> Option<MapData> {
     let map_bg_color = data.map_bg_color.unwrap_or(1);
     let zone_texts = data.texts.unwrap_or_default();
 
+    // Merge tile edits from both FG and BG
+    let mut tile_edits: HashMap<String, Vec<(u8, u8)>> = HashMap::new();
+    for edits in [&data.tile_edits, &data.bg_tile_edits] {
+        if let Some(edits) = edits {
+            for (name, edit) in edits {
+                let pixels: Vec<(u8, u8)> = edit.lum.iter().map(|p| (p.lum, p.a)).collect();
+                tile_edits.insert(name.clone(), pixels);
+            }
+        }
+    }
+
     Some(MapData {
         map_w: w,
         map_h: h,
@@ -181,6 +208,7 @@ pub fn read_level_json(json_path: &Path) -> Option<MapData> {
         entities,
         map_bg_color,
         zone_texts,
+        tile_edits,
     })
 }
 
@@ -297,6 +325,32 @@ pub fn build_level_data(
         }
     };
 
+    // Helper to get tile name by unified index
+    let get_tile_name = |uni: usize| -> Option<&str> {
+        if uni < main_count {
+            Some(&tileset[uni].0)
+        } else if uni - main_count < bg_tileset.len() {
+            Some(&bg_tileset[uni - main_count].0)
+        } else {
+            None
+        }
+    };
+
+    // Remap tile pixels, using editor pixel edits if available
+    let remap_tile = |uni: usize| -> Option<Vec<u8>> {
+        let name = get_tile_name(uni)?;
+        let bc = band_colors_for_tile(uni);
+        if let Some(lum_data) = map_data.tile_edits.get(name) {
+            let pixels: Vec<(u8, u8, u8, u8)> = lum_data.iter()
+                .map(|&(lum, a)| (lum, lum, lum, a))
+                .collect();
+            Some(crate::tileset::remap_tile_colors(&pixels, bc))
+        } else {
+            let img = get_tile(uni)?;
+            Some(remap_tile_image(img, bc))
+        }
+    };
+
     // Collect which tiles need base and/or rot90 across all layers
     let needs_base: HashSet<usize> = {
         let mut s = HashSet::new();
@@ -319,14 +373,13 @@ pub fn build_level_data(
         v
     };
     for &ti in &main_used {
-        let tile_img = match get_tile(ti) {
-            Some(img) => img,
+        let base_pixels = match remap_tile(ti) {
+            Some(p) => p,
             None => {
                 eprintln!("  WARNING: tile index {} out of range, skipping", ti);
                 continue;
             }
         };
-        let base_pixels = remap_tile_image(tile_img, band_colors_for_tile(ti));
         let flag = if ti < map_data.flags.len() { map_data.flags[ti] } else { 0 };
         if needs_base.contains(&ti) {
             let rt_id = add_rt_tile(base_pixels.clone(), &mut rt_tiles, &mut rt_hashes);
@@ -355,14 +408,13 @@ pub fn build_level_data(
         v
     };
     for &ti in &bg_only {
-        let tile_img = match get_tile(ti) {
-            Some(img) => img,
+        let base_pixels = match remap_tile(ti) {
+            Some(p) => p,
             None => {
                 eprintln!("  WARNING: BG tile index {} out of range, skipping", ti);
                 continue;
             }
         };
-        let base_pixels = remap_tile_image(tile_img, band_colors_for_tile(ti));
         if needs_base.contains(&ti) && !base_rt.contains_key(&ti) {
             let rt_id = add_rt_tile(base_pixels.clone(), &mut rt_tiles, &mut rt_hashes);
             base_rt.insert(ti, rt_id);
