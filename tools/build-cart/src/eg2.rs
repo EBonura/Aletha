@@ -140,6 +140,79 @@ pub fn eg2_encode_frame(pixels: &[u8], bpp: u8, w: usize, h: usize) -> (Vec<u8>,
     (best_bytes.unwrap(), best_mode, best_order)
 }
 
+/// Same as eg2_encode_frame but for u16 values (needed for map cells with >8-bit range).
+pub fn eg2_encode_frame_u16(pixels: &[u16], bpp: u8, w: usize, h: usize) -> (Vec<u8>, u8, u8) {
+    let mut best_bytes: Option<Vec<u8>> = None;
+    let mut best_mode: u8 = 0;
+    let mut best_order: u8 = 2;
+
+    for mode in [0u8, 4] {
+        let diff: Vec<u16> = if mode == 4 {
+            // Paeth prediction on u16
+            let mut out = pixels.to_vec();
+            for i in (0..pixels.len()).rev() {
+                let x = i % w;
+                let y = i / w;
+                let a = if x > 0 { pixels[i - 1] as i32 } else { 0 };
+                let b = if y > 0 { pixels[i - w] as i32 } else { 0 };
+                let c = if x > 0 && y > 0 { pixels[i - w - 1] as i32 } else { 0 };
+                let p = a + b - c;
+                let pa = (p - a).abs();
+                let pb = (p - b).abs();
+                let pc = (p - c).abs();
+                let pred = if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c };
+                out[i] = pixels[i] ^ (pred as u16);
+            }
+            out
+        } else {
+            pixels.to_vec()
+        };
+
+        let mut bitstream = Vec::with_capacity(diff.len() * bpp as usize);
+        for &p in &diff {
+            for b in (0..bpp).rev() {
+                bitstream.push(((p >> b) & 1) as u8);
+            }
+        }
+
+        for order in [1u8, 2, 3] {
+            let mut out_bits: Vec<u8> = vec![
+                mode & 1, (mode >> 1) & 1, (mode >> 2) & 1,
+                (order - 1) & 1, ((order - 1) >> 1) & 1,
+            ];
+
+            const MAX_EG_RUN: u32 = 16383;
+            let nb = bitstream.len();
+            let mut i = 0;
+            while i < nb {
+                let mut zero_run: u32 = 0;
+                while i < nb && bitstream[i] == 0 { zero_run += 1; i += 1; }
+                while zero_run > MAX_EG_RUN {
+                    out_bits.extend_from_slice(&eg_encode_bits(MAX_EG_RUN, order));
+                    zero_run -= MAX_EG_RUN;
+                }
+                out_bits.extend_from_slice(&eg_encode_bits(zero_run, order));
+                if i < nb { i += 1; }
+            }
+
+            let mut out = Vec::with_capacity((out_bits.len() + 7) / 8);
+            for chunk in out_bits.chunks(8) {
+                let mut byte = 0u8;
+                for (b, &bit) in chunk.iter().enumerate() { byte |= bit << b; }
+                out.push(byte);
+            }
+
+            if best_bytes.is_none() || out.len() < best_bytes.as_ref().unwrap().len() {
+                best_bytes = Some(out);
+                best_mode = mode;
+                best_order = order;
+            }
+        }
+    }
+
+    (best_bytes.unwrap(), best_mode, best_order)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

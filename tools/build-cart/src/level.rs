@@ -186,19 +186,19 @@ pub fn read_level_json(json_path: &Path) -> Option<MapData> {
 
 /// Encode a map layer using EG-2. Returns (data_bytes, description).
 fn encode_layer(cell_grid: &[Vec<u16>], map_w: usize, map_h: usize, label: &str) -> (Vec<u8>, String) {
-    let flat: Vec<u8> = cell_grid
+    let flat: Vec<u16> = cell_grid
         .iter()
-        .flat_map(|row| row.iter().map(|&c| c as u8))
+        .flat_map(|row| row.iter().copied())
         .collect();
     let max_val = flat.iter().copied().max().unwrap_or(0);
     let mut bpp = 1u8;
-    for try_bpp in 1..=8 {
-        if (1u16 << try_bpp) > max_val as u16 {
+    for try_bpp in 1..=16 {
+        if (1u32 << try_bpp) > max_val as u32 {
             bpp = try_bpp;
             break;
         }
     }
-    let (eg2_data, eg2_mode, eg2_order) = eg2_encode_frame(&flat, bpp, map_w, map_h);
+    let (eg2_data, eg2_mode, eg2_order) = crate::eg2::eg2_encode_frame_u16(&flat, bpp, map_w, map_h);
     let mut out = vec![bpp];
     out.extend_from_slice(&eg2_data);
     let desc = format!("EG2 {}b {}bpp (mode={} order={})", out.len(), bpp, eg2_mode, eg2_order);
@@ -238,10 +238,9 @@ pub fn build_level_data(
     eprintln!("  Spawn: ({}, {})", map_data.spawn_x, map_data.spawn_y);
     eprintln!("  Unified tileset: {} main + {} BG tiles", main_count, bg_tileset.len());
 
-    // Step 1: Collect used tiles per layer
+    // Step 1: Collect used tiles per layer (base + rot90 for all layers)
     let mut used_base: Vec<HashSet<usize>> = vec![HashSet::new(); num_layers];
     let mut used_rot90: Vec<HashSet<usize>> = vec![HashSet::new(); num_layers];
-    let mut bg_used: Vec<HashSet<(usize, u8)>> = vec![HashSet::new(); num_layers];
 
     for l in 0..num_layers {
         for y in 0..map_h {
@@ -251,15 +250,11 @@ pub fn build_level_data(
                     continue;
                 }
                 let xf = map_data.xform_grids[l][y][x] as u8;
-                if l == 1 {
-                    let rot = xf & 3;
-                    if rot == 0 || rot == 2 {
-                        used_base[l].insert(ti as usize);
-                    } else {
-                        used_rot90[l].insert(ti as usize);
-                    }
+                let rot = xf & 3;
+                if rot == 0 || rot == 2 {
+                    used_base[l].insert(ti as usize);
                 } else {
-                    bg_used[l].insert((ti as usize, xf));
+                    used_rot90[l].insert(ti as usize);
                 }
             }
         }
@@ -269,9 +264,8 @@ pub fn build_level_data(
     let mut rt_tiles: Vec<Vec<u8>> = Vec::new();
     let mut rt_tile_flags: HashMap<usize, u8> = HashMap::new();
     let mut rt_hashes: Vec<String> = Vec::new();
-    let mut main_base_rt: HashMap<usize, usize> = HashMap::new();
-    let mut main_rot90_rt: HashMap<usize, usize> = HashMap::new();
-    let mut bg_rt: Vec<HashMap<(usize, u8), usize>> = vec![HashMap::new(); num_layers];
+    let mut base_rt: HashMap<usize, usize> = HashMap::new();
+    let mut rot90_rt: HashMap<usize, usize> = HashMap::new();
 
     let md5_hash = |pixels: &[u8]| -> String {
         let mut hasher = Md5::new();
@@ -292,8 +286,31 @@ pub fn build_level_data(
         rt_id + 1
     };
 
-    // Process main tiles
-    let all_main_used: Vec<usize> = {
+    // Helper to look up tile image by unified index
+    let get_tile = |uni: usize| -> Option<&DynamicImage> {
+        if uni < main_count {
+            Some(&tileset[uni].1)
+        } else if uni - main_count < bg_tileset.len() {
+            Some(&bg_tileset[uni - main_count].1)
+        } else {
+            None
+        }
+    };
+
+    // Collect which tiles need base and/or rot90 across all layers
+    let needs_base: HashSet<usize> = {
+        let mut s = HashSet::new();
+        for l in 0..num_layers { s.extend(&used_base[l]); }
+        s
+    };
+    let needs_rot90: HashSet<usize> = {
+        let mut s = HashSet::new();
+        for l in 0..num_layers { s.extend(&used_rot90[l]); }
+        s
+    };
+
+    // Process main-layer tiles first (these become "spr" tiles)
+    let main_used: Vec<usize> = {
         let mut s: HashSet<usize> = HashSet::new();
         s.extend(&used_base[1]);
         s.extend(&used_rot90[1]);
@@ -301,84 +318,77 @@ pub fn build_level_data(
         v.sort();
         v
     };
-    for &ti in &all_main_used {
-        let get_tile = |uni: usize| -> Option<&DynamicImage> {
-            if uni < main_count {
-                Some(&tileset[uni].1)
-            } else if uni - main_count < bg_tileset.len() {
-                Some(&bg_tileset[uni - main_count].1)
-            } else {
-                None
-            }
-        };
+    for &ti in &main_used {
         let tile_img = match get_tile(ti) {
             Some(img) => img,
             None => {
-                eprintln!("  WARNING: main layer tile index {} out of range, skipping", ti);
+                eprintln!("  WARNING: tile index {} out of range, skipping", ti);
                 continue;
             }
         };
         let base_pixels = remap_tile_image(tile_img, band_colors_for_tile(ti));
-        if used_base[1].contains(&ti) {
+        let flag = if ti < map_data.flags.len() { map_data.flags[ti] } else { 0 };
+        if needs_base.contains(&ti) {
             let rt_id = add_rt_tile(base_pixels.clone(), &mut rt_tiles, &mut rt_hashes);
-            main_base_rt.insert(ti, rt_id);
-            let flag = if ti < map_data.flags.len() { map_data.flags[ti] } else { 0 };
+            base_rt.insert(ti, rt_id);
             rt_tile_flags.insert(rt_id, flag);
         }
-        if used_rot90[1].contains(&ti) {
+        if needs_rot90.contains(&ti) {
             let rot90_pixels = apply_transform(&base_pixels, 1, false, false);
             let rt_id = add_rt_tile(rot90_pixels, &mut rt_tiles, &mut rt_hashes);
-            main_rot90_rt.insert(ti, rt_id);
-            let flag = if ti < map_data.flags.len() { map_data.flags[ti] } else { 0 };
+            rot90_rt.insert(ti, rt_id);
             rt_tile_flags.insert(rt_id, flag);
         }
     }
     let num_spr_tiles = rt_tiles.len();
 
-    // Process BG tiles
-    for l in [0, 2] {
-        let mut sorted_bg: Vec<(usize, u8)> = bg_used[l].iter().copied().collect();
-        sorted_bg.sort();
-        for (ti, xf) in sorted_bg {
-            let tile_img = if ti < main_count {
-                &tileset[ti].1
-            } else if ti - main_count < bg_tileset.len() {
-                &bg_tileset[ti - main_count].1
-            } else {
-                eprintln!("  WARNING: layer {} tile index {} out of range, skipping", l, ti);
+    // Process BG-only tiles (not already added by main layer)
+    let bg_only: Vec<usize> = {
+        let mut s: HashSet<usize> = HashSet::new();
+        for l in [0, 2] {
+            s.extend(&used_base[l]);
+            s.extend(&used_rot90[l]);
+        }
+        for &ti in &main_used { s.remove(&ti); }
+        let mut v: Vec<usize> = s.into_iter().collect();
+        v.sort();
+        v
+    };
+    for &ti in &bg_only {
+        let tile_img = match get_tile(ti) {
+            Some(img) => img,
+            None => {
+                eprintln!("  WARNING: BG tile index {} out of range, skipping", ti);
                 continue;
-            };
-            let base_pixels = remap_tile_image(tile_img, band_colors_for_tile(ti));
-            let rot = xf & 3;
-            let hflip = xf & 4 != 0;
-            let vflip = xf & 8 != 0;
-            let pixels = apply_transform(&base_pixels, rot, hflip, vflip);
-            let rt_id = add_rt_tile(pixels, &mut rt_tiles, &mut rt_hashes);
-            bg_rt[l].insert((ti, xf), rt_id);
+            }
+        };
+        let base_pixels = remap_tile_image(tile_img, band_colors_for_tile(ti));
+        if needs_base.contains(&ti) && !base_rt.contains_key(&ti) {
+            let rt_id = add_rt_tile(base_pixels.clone(), &mut rt_tiles, &mut rt_hashes);
+            base_rt.insert(ti, rt_id);
+        }
+        if needs_rot90.contains(&ti) && !rot90_rt.contains_key(&ti) {
+            let rot90_pixels = apply_transform(&base_pixels, 1, false, false);
+            let rt_id = add_rt_tile(rot90_pixels, &mut rt_tiles, &mut rt_hashes);
+            rot90_rt.insert(ti, rt_id);
         }
     }
     let num_rt = rt_tiles.len();
 
-    eprintln!("  BG1: {} variants, Main: {} editor tiles, BG2: {} variants",
-        bg_used[0].len(),
-        used_base[1].len() + used_rot90[1].len(),
-        bg_used[2].len()
+    eprintln!("  Unique tiles: {} base + {} rot90 = {} runtime ({} spr + {} bg)",
+        base_rt.len(), rot90_rt.len(), num_rt, num_spr_tiles, num_rt - num_spr_tiles
     );
-    eprintln!("  Runtime tiles: {} ({} spr + {} bg)", num_rt, num_spr_tiles, num_rt - num_spr_tiles);
 
-    // Convert editor (tile_id, xform) to cell value
-    let editor_to_cell = |l: usize, ti: i32, xf: i32| -> u16 {
+    // Convert editor (tile_id, xform) to cell value — unified for all layers
+    let editor_to_cell = |_l: usize, ti: i32, xf: i32| -> u16 {
         if ti == 255 {
             return 0;
         }
-        if l != 1 {
-            return *bg_rt[l].get(&(ti as usize, xf as u8)).unwrap_or(&0) as u16;
-        }
         let rot = (xf & 3) as u8;
         let rt_id = if rot == 0 || rot == 2 {
-            *main_base_rt.get(&(ti as usize)).unwrap_or(&0)
+            *base_rt.get(&(ti as usize)).unwrap_or(&0)
         } else {
-            *main_rot90_rt.get(&(ti as usize)).unwrap_or(&0)
+            *rot90_rt.get(&(ti as usize)).unwrap_or(&0)
         };
         if rt_id == 0 {
             return 0;

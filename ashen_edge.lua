@@ -359,7 +359,6 @@ function load_tiles()
  for L=1,nl do
   local lsz=pk2(map_base+10+L*2)
   mdat[L]=decode_eg2(p+1,sz,peek(p),lvl_w)
-  if L~=2 then for i=1,sz do mdat[L][i]*=4 end end
   p+=lsz
  end
  local ne=peek(p) p+=1
@@ -590,7 +589,6 @@ function check_attacks()
  local ax0=facing>0 and px+3 or px-17
  local ax1=ax0+14
  local ay0,ay1=py+3,py+19
- local function h(x,y,m) return ax1>x-m and ax0<x+m+16 and ay1>y-m and ay0<y+m+16 end
  local tx0,ty0,tx1,ty1=ax0\16,ay0\16,thi(ax1),thi(ay1)
  for ty=ty0,ty1 do
   for tx=tx0,tx1 do
@@ -606,25 +604,12 @@ function check_attacks()
   end
  end
  for e in all(ents) do
-  local t=e.type
-  if t==4 then
-   if h(e.x,e.y,8) and e.lit then
-    e.lit,e.frame=false,7
-    torches+=1
-    torch_got[e.ty*256+e.tx]=true
-    pemit(e.x+8,e.y+8,9,2,10)
-   end
-  elseif t>=6 and e.hp>0 and e.state~="death" and e.inv_t==0 then
-   if t==6 then
-    if h(e.x,e.y,0) then ent_hurt(e,e.da,e.ha) end
-   elseif e.state~="sleep" and (t~=7 or e.state~="fdash") then
-    local wb=t==7
-    local hw=wb and 14 or 15
-    if ax1>e.x-hw and ax0<e.x+hw
-     and ay1>e.y-(wb and 24 or 28) and ay0<e.y then
-     ent_hurt(e,e.da,e.ha)
-    end
-   end
+  if e.hx0 and e.hp>0 and e.inv_t==0
+   and e.state~="sleep" and e.state~="death"
+   and (e.type~=7 or e.state~="fdash")
+   and ax1>e.x+e.hx0 and ax0<e.x+e.hx1
+   and ay1>e.y+e.hy0 and ay0<e.y+e.hy1 then
+   ent_hurt(e)
   end
  end
 end
@@ -638,7 +623,7 @@ end
 function update_parts()
  for p in all(parts) do
   if p.em then
-   for i=1,p.r do local q=mkp(p.x,p.y,1) q.cl=p.cl end
+   for i=1,p.r do local q=mkp(p.x,p.y,1) q.cl=p.cl q.vy=rnd(2)-1 end
    p.d-=1 if p.d<=0 then del(parts,p) end
   else
    p.x+=p.vx p.y+=p.vy
@@ -686,11 +671,12 @@ function init_ents()
    e.anim_t,e.active,e.cost=0,false,e.cost or 0
   elseif t==4 then
    e.x,e.y=e.tx*16,e.ty*16
-   e.anim_t=0
+   e.anim_t,e.inv_t=0,0
+   e.hx0,e.hy0,e.hx1,e.hy1=-8,-8,24,24
    if torch_got[e.ty*256+e.tx] then
-    e.anim,e.frame,e.lit=a_torch,7,false
+    e.anim,e.frame,e.hp=a_torch,7,0
    else
-    e.anim,e.frame,e.lit=a_torch,1,true
+    e.anim,e.frame,e.hp=a_torch,1,1
    end
   elseif t==6 then
    e.x,e.y=e.tx*16,e.ty*16
@@ -706,6 +692,7 @@ function init_ents()
    e.fx,e.fy,e.fs=8,8,2
    e.dr,e.dyr,e.dyo=80,48,0
    e.da,e.ha=a_spd,a_sph
+   e.hx0,e.hy0,e.hx1,e.hy1=0,0,16,16
   elseif t==7 then init_bot(e,a_wbi,4)
    e.ia,e.wa,e.ws=a_wbi,a_wbm,0.6
    e.sa,e.scd,e.spt=a_wbs,120,60
@@ -713,6 +700,7 @@ function init_ents()
    e.dr,e.dyr,e.dyo=80,32,11
    e.da,e.ha=a_wbdt,a_wbd
    e.wka=a_wbwk
+   e.hx0,e.hy0,e.hx1,e.hy1=-14,-24,14,0
   elseif t==8 then init_bot(e,a_hbi,5)
    e.ia,e.wa=a_hbi,a_hbr
    e.sa,e.dr,e.dyr=a_hbs,90,32
@@ -728,6 +716,7 @@ function init_ents()
    e.ws,e.scd,e.spt=0.8,90,30
    e.fx,e.fy,e.fs=0,-14,2
    e.dyo=11
+   e.hx0,e.hy0,e.hx1,e.hy1=-15,-28,15,0
   end
  end
 end
@@ -771,13 +760,19 @@ function toggle_switch(e)
  end
 end
 
-function ent_hurt(e,da,ha)
+function ent_hurt(e)
  e.hp,e.inv_t=e.hp-plr_atk,20
- pemit(e.x,e.y-8,8,2,8)
+ pemit(e.x+(e.hx0+e.hx1)\2,e.y+(e.hy0+e.hy1)\2,e.type==4 and 9 or 8,2,8)
  if e.hp<=0 then
-  e.vx=0 sp_set_anim(e,da,"death")
+  e.vx=0
+  if e.type==4 then
+   e.frame=7 torches+=1
+   torch_got[e.ty*256+e.tx]=true
+  else
+   sp_set_anim(e,e.da,"death")
+  end
  else
-  e.vx=0 sp_set_anim(e,ha,"hit")
+  e.vx=0 sp_set_anim(e,e.ha,"hit")
  end
 end
 
@@ -1059,10 +1054,10 @@ function update_ents()
      else e.state,e.frame=0,15 end
     end
    end
-  elseif t==3 or t==4 and e.lit then
+  elseif t==3 or t==4 and e.hp>0 then
    local tk,nf=ent_tick(e,6)
    if tk then e.frame=e.frame%(t==4 and 6 or nf)+1 end
-   if t==4 and e.lit and abs(px-e.x-8)<11 and abs(py+11-e.y-8)<14 then
+   if t==4 and e.hp>0 and abs(px-e.x-8)<11 and abs(py+11-e.y-8)<14 then
     hurt_plr()
    end
   elseif t==5 and px\16>=e.tx and px\16<e.tx+e.tw and py\16>=e.ty and py\16<e.ty+e.th then
