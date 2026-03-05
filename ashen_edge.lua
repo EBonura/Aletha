@@ -599,7 +599,7 @@ function check_attacks()
     if fl&8>0 then mkp(tx*16,ty*16,3).c=c pemit(tx*16+8,ty*16+8,5,1,5)
     else pemit(tx*16+8,ty*16+8,8,2,5) end
    elseif fl&1>0 then
-    local q=mkp(tx*16+8,ty*16+8,1) q.cl=0
+    pemit(tx*16+8,ty*16+8,0,2,3,2)
    end
   end
  end
@@ -614,16 +614,16 @@ function check_attacks()
  end
 end
 function mkp(x,y,s)
- local p={x=x,y=y,vx=rnd(s)-s/2,vy=-rnd(s)-1,age=0}
+ local p={x=x,y=y,vx=rnd(s)-s/2,vy=rnd(s)-s/2,age=0}
  add(parts,p) return p
 end
-function pemit(x,y,cl,r,d)
- add(parts,{em=true,x=x,y=y,cl=cl,r=r,d=d})
+function pemit(x,y,cl,r,d,s)
+ add(parts,{em=true,x=x,y=y,cl=cl,r=r,d=d,s=s or 1})
 end
 function update_parts()
  for p in all(parts) do
   if p.em then
-   for i=1,p.r do local q=mkp(p.x,p.y,1) q.cl=p.cl q.vy=rnd(2)-1 end
+   for i=1,p.r do local q=mkp(p.x,p.y,p.s) q.cl=p.cl end
    p.d-=1 if p.d<=0 then del(parts,p) end
   else
    p.x+=p.vx p.y+=p.vy
