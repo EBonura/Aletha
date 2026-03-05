@@ -145,24 +145,21 @@ textarea { border-radius: 4px; }
 #pixedit-btns { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
 #pixedit-btns button { flex:1; min-width:60px; }
 
-/* Palette tabs */
-.pal-tab { background: var(--bg-btn); color: var(--text-label); border: 1px solid var(--border); cursor: pointer; padding: 6px 14px; font-size: 14px; font-family: monospace; }
-.pal-tab.active { background: var(--accent); color: var(--text); border-color: var(--accent); }
-.pal-tab:hover { background: var(--bg-hover); }
+/* Palette zoom */
 #pal-zoom-in, #pal-zoom-out { background: var(--bg-btn); color: var(--text-label); border: 1px solid var(--border); cursor: pointer; padding: 6px 12px; font-size: 14px; font-family: monospace; }
 #pal-zoom-in:hover, #pal-zoom-out:hover { background: var(--bg-hover); }
 
-/* Layer controls — multiswitch */
-.layer-switch { display: flex; flex-direction: column; gap: 1px; }
-.layer-row { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
-.layer-row.active { border-color: var(--accent); }
-.layer-sel { flex: 1; padding: 3px 6px; background: var(--bg-btn); color: var(--text-dim); cursor: pointer; font-family: monospace; font-size: 11px; border: none; text-align: left; }
-.layer-row.active .layer-sel { background: var(--accent); color: var(--text); font-weight: bold; }
+/* Layer controls — grid table */
+.layer-switch { display: flex; flex-direction: column; gap: 2px; }
+.layer-row { display: grid; grid-template-columns: 1fr 48px 28px; align-items: stretch; border: 1px solid transparent; border-radius: 3px; overflow: hidden; }
+.layer-row.active { border-color: var(--accent); background: rgba(255,0,77,0.15); }
+.layer-sel { padding: 4px 8px; background: transparent; color: var(--text-dim); cursor: pointer; font-family: monospace; font-size: 12px; border: none; text-align: left; display: flex; align-items: center; }
+.layer-row.active .layer-sel { color: var(--text); font-weight: bold; }
 .layer-sel:hover { background: var(--bg-hover); }
-.layer-eye { padding: 3px 5px; background: var(--bg-btn); color: var(--text); cursor: pointer; font-size: 12px; border: none; border-left: 1px solid var(--border); opacity: 1; }
+.layer-plx { width: 100%; background: transparent; color: var(--text); border: none; border-left: 1px solid var(--border); padding: 4px 4px; font-family: monospace; font-size: 10px; text-align: center; box-sizing: border-box; }
+.layer-eye { padding: 4px 5px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; border: none; border-left: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
 .layer-eye.hidden { opacity: 0.3; }
 .layer-eye:hover { background: var(--bg-hover); }
-.layer-plx { width: 48px; background: var(--bg-btn); color: var(--text); border: none; border-left: 1px solid var(--border); padding: 3px 4px; font-family: monospace; font-size: 10px; text-align: center; }
 
 /* Entity panel */
 .sidebar-panel { padding: 8px; background: var(--bg-panel); border-top: 1px solid var(--bg-btn); }
@@ -189,7 +186,7 @@ textarea { border-radius: 4px; }
 <body>
 
 <div id="sidebar">
-  <h2><button class="pal-tab" data-layer="0">BG1</button><button class="pal-tab active" data-layer="1">Main</button><button class="pal-tab" data-layer="2">BG2</button> <button id="pal-new-tile" data-tip="New blank tile">&#x2795;</button> <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
+  <h2>Tiles <span style="flex:1"></span> <button id="pal-zoom-out">-</button> <button id="pal-zoom-in">+</button></h2>
   <div id="palette"></div>
   <div id="band-editor">
     <h3>Color Remap</h3>
@@ -897,10 +894,6 @@ function updateLayerUI() {
   document.querySelectorAll(".layer-row").forEach(r => {
     r.classList.toggle("active", parseInt(r.dataset.layer) === curLayer);
   });
-  updatePaletteTabs();
-}
-function updatePaletteTabs() {
-  document.querySelectorAll(".pal-tab").forEach(b => b.classList.toggle("active", parseInt(b.dataset.layer) === curLayer));
 }
 
 function loadTileImages(cb) {
@@ -1001,9 +994,9 @@ function tileGridPos(uni) {
   return m ? {r: parseInt(m[1]), c: parseInt(m[2]), bg: isBgTile(uni)} : null;
 }
 function selectTile(i, opts) {
-  const ctrl = opts && opts.ctrl;
+  const multi = (opts && opts.ctrl) || (opts && opts.shift);
   const shift = opts && opts.shift;
-  if (shift && lastClickedTile >= 0) {
+  if (multi && shift && lastClickedTile >= 0) {
     const posA = tileGridPos(lastClickedTile);
     const posB = tileGridPos(i);
     if (posA && posB && posA.bg === posB.bg) {
@@ -1024,7 +1017,7 @@ function selectTile(i, opts) {
       });
     }
     lastClickedTile = i;
-  } else if (ctrl) {
+  } else if (multi) {
     const idx = selectedTiles.indexOf(i);
     if (idx >= 0 && selectedTiles.length > 1) selectedTiles.splice(idx, 1);
     else if (idx < 0) selectedTiles.push(i);
@@ -1276,6 +1269,41 @@ function render() {
     ctx.fillStyle = "rgba(41,173,255,0.12)";
     ctx.fillRect(s.x * ts, s.y * ts, s.w * ts, s.h * ts);
     ctx.setLineDash([]);
+    ctx.restore();
+  }
+  // Rectangle drag preview
+  if (isDrawing && currentTool === "rect" && hoverTX >= 0 && hoverTY >= 0) {
+    const gImgs = imagesForLayer(curLayer), gRaw = rawImagesForLayer(curLayer);
+    const xf = {rot: curRotation, hflip: curHFlip, vflip: curVFlip};
+    const rMinX = Math.min(drawStartTX, hoverTX), rMaxX = Math.max(drawStartTX, hoverTX);
+    const rMinY = Math.min(drawStartTY, hoverTY), rMaxY = Math.max(drawStartTY, hoverTY);
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    if (placementMode === "stamp" && selectedTiles.length > 1) {
+      const stamp = getStampTiles();
+      const sw = Math.max(1, ...stamp.map(t => t.dx + 1)), sh = Math.max(1, ...stamp.map(t => t.dy + 1));
+      for (let ry = rMinY; ry <= rMaxY; ry++) for (let rx = rMinX; rx <= rMaxX; rx++) {
+        const st = stamp.find(t => ((rx - rMinX) % sw) === t.dx && ((ry - rMinY) % sh) === t.dy);
+        if (st && inBounds(rx, ry)) {
+          const img = gImgs[st.idx] || gRaw[st.idx];
+          if (img) { if (xf.rot===0&&!xf.hflip&&!xf.vflip) ctx.drawImage(img,rx*ts,ry*ts,ts,ts); else { ctx.save();ctx.translate(rx*ts+ts/2,ry*ts+ts/2);if(xf.hflip)ctx.scale(-1,1);if(xf.vflip)ctx.scale(1,-1);ctx.rotate(xf.rot*Math.PI/2);ctx.drawImage(img,-ts/2,-ts/2,ts,ts);ctx.restore(); } }
+        }
+      }
+    } else if (placementMode === "random" && selectedTiles.length > 1) {
+      // For random, just show the outline
+    } else {
+      const ti = getSelectedTile();
+      const img = gImgs[ti] || gRaw[ti];
+      for (let ry = rMinY; ry <= rMaxY; ry++) for (let rx = rMinX; rx <= rMaxX; rx++) {
+        if (inBounds(rx, ry) && img) {
+          if (xf.rot===0&&!xf.hflip&&!xf.vflip) ctx.drawImage(img,rx*ts,ry*ts,ts,ts); else { ctx.save();ctx.translate(rx*ts+ts/2,ry*ts+ts/2);if(xf.hflip)ctx.scale(-1,1);if(xf.vflip)ctx.scale(1,-1);ctx.rotate(xf.rot*Math.PI/2);ctx.drawImage(img,-ts/2,-ts/2,ts,ts);ctx.restore(); }
+        }
+      }
+    }
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rMinX * ts, rMinY * ts, (rMaxX - rMinX + 1) * ts, (rMaxY - rMinY + 1) * ts);
     ctx.restore();
   }
   // Ghost preview
@@ -1558,6 +1586,7 @@ wrap.addEventListener("mousemove", e => {
   else document.getElementById("st-pos").textContent="-";
   hoverTX = tx; hoverTY = ty;
   if (!isPanning && !isDrawing && currentTool !== "select") render();
+  if (isDrawing && currentTool === "rect") render();
 });
 wrap.addEventListener("mouseup", e => {
   if (isPanning) { isPanning=false;wrap.style.cursor="crosshair";return; }
@@ -2220,12 +2249,6 @@ document.querySelectorAll(".parallax-input").forEach(inp => {
   });
 });
 
-document.querySelectorAll(".pal-tab").forEach(b => {
-  b.addEventListener("click", () => {
-    switchLayer(parseInt(b.dataset.layer));
-  });
-});
-
 // Boot
 loadTileImages(async () => {
   MAIN_COUNT = TILES.length;
@@ -2242,6 +2265,19 @@ loadTileImages(async () => {
   updateSpawnInfo();
   render();
   await loadLevel();
+  // Center view on spawn point (or map center if no spawn)
+  {
+    const wrap = document.getElementById("canvas-wrap");
+    const rect = wrap.getBoundingClientRect();
+    const ts = 16 * zoom;
+    const cx = spawnX >= 0 ? (spawnX + 0.5) * ts : (mapW * ts) / 2;
+    const cy = spawnY >= 0 ? (spawnY + 1) * ts : (mapH * ts) / 2;
+    panX = rect.width / 2 - cx;
+    panY = rect.height / 2 - cy;
+    canvas.style.left = panX + "px";
+    canvas.style.top = panY + "px";
+  }
+  render();
 });
 
 // ── Pixel Tile Editor ──────────────────────────────────────────
@@ -2443,44 +2479,6 @@ function closePixelEditor() {
   peModal.classList.remove("show");
 }
 
-// New tile — adds to main tileset (T_ prefix)
-document.getElementById("pal-new-tile").addEventListener("click", () => {
-  const tiles = TILES;
-  const images = tileImages;
-  const lumArr = tileLum;
-  const colCount = 18;
-  const rowCount = 16;
-  const usedSlots = new Set();
-  tiles.forEach(t => {
-    const m = t.name.match(/T_(\d+)_(\d+)/);
-    if (m) usedSlots.add(m[1] + "_" + m[2]);
-  });
-  let newR = -1, newC = -1;
-  outer: for (let r = rowCount - 1; r >= 0; r--) {
-    for (let c = colCount - 1; c >= 0; c--) {
-      const key = String(r).padStart(2,"0") + "_" + String(c).padStart(2,"0");
-      if (!usedSlots.has(key)) { newR = r; newC = c; break outer; }
-    }
-  }
-  if (newR === -1) { showToast("No empty tile slots"); return; }
-  const name = "T_" + String(newR).padStart(2,"0") + "_" + String(newC).padStart(2,"0");
-  const tc = document.createElement("canvas"); tc.width = 16; tc.height = 16;
-  const b64 = tc.toDataURL("image/png").split(",")[1];
-  const newIdx = tiles.length;
-  tiles.push({name, b64});
-  const blankImg = new Image();
-  blankImg.onload = () => {
-    images[newIdx] = blankImg;
-    lumArr[newIdx] = Array.from({length: 256}, () => ({lum: 0, a: 0}));
-    tileFlags[newIdx] = 0;
-    MAIN_COUNT = TILES.length; // update count
-    remapAllTiles();
-    buildPalette();
-    render();
-    openPixelEditor(newIdx); // unified index = local index for main tiles
-  };
-  blankImg.src = "data:image/png;base64," + b64;
-});
 
 // Export tileset as PNG
 document.getElementById("pixedit-export-ts").addEventListener("click", () => {

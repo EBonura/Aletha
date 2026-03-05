@@ -16,6 +16,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/" or self.path == "/index.html":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             with open(HTML, "rb") as f:
                 self.wfile.write(f.read())
