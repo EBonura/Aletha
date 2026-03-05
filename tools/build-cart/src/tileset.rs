@@ -31,7 +31,8 @@ pub fn remap_tile_colors(tile_pixels: &[(u8, u8, u8, u8)], band_colors: &[u8; 5]
 }
 
 /// Remap using image luminance (converts to greyscale first).
-pub fn remap_tile_image(img: &DynamicImage, band_colors: &[u8; 5]) -> Vec<u8> {
+/// If `invert_alpha` is true, transparent pixels become mid-grey and opaque pixels become transparent.
+pub fn remap_tile_image(img: &DynamicImage, band_colors: &[u8; 5], invert_alpha: bool) -> Vec<u8> {
     let grey = img.to_luma_alpha8();
     let (w, h) = grey.dimensions();
     let mut result = Vec::with_capacity((w * h) as usize);
@@ -40,12 +41,14 @@ pub fn remap_tile_image(img: &DynamicImage, band_colors: &[u8; 5]) -> Vec<u8> {
             let px = grey.get_pixel(x, y);
             let lum = px[0];
             let alpha = px[1];
-            if alpha < 128 {
+            let is_transparent = if invert_alpha { alpha >= 128 } else { alpha < 128 };
+            if is_transparent {
                 result.push(TRANS);
             } else {
+                let actual_lum = if invert_alpha && alpha < 128 { 100 } else { lum };
                 let mut color = band_colors[4];
                 for (i, &(lo, hi)) in BAND_RANGES.iter().enumerate() {
-                    if lum >= lo && lum <= hi {
+                    if actual_lum >= lo && actual_lum <= hi {
                         color = band_colors[i];
                         break;
                     }
@@ -120,7 +123,7 @@ pub fn slice_tileset(tileset_path: &Path, band_colors: &[u8; 5]) -> Vec<(String,
                 continue;
             }
 
-            let remapped = remap_tile_image(&tile_img, band_colors);
+            let remapped = remap_tile_image(&tile_img, band_colors, false);
             let h = md5_hash(&remapped);
             if seen_hashes.contains_key(&h) {
                 continue;
@@ -138,7 +141,7 @@ pub fn slice_tileset(tileset_path: &Path, band_colors: &[u8; 5]) -> Vec<(String,
                     if flip {
                         t = DynamicImage::ImageRgba8(imageops::flip_horizontal(&t.to_rgba8()));
                     }
-                    let th = md5_hash(&remap_tile_image(&t, band_colors));
+                    let th = md5_hash(&remap_tile_image(&t, band_colors, false));
                     if seen_hashes.contains_key(&th) {
                         is_dup = true;
                         break;
@@ -175,7 +178,7 @@ pub fn slice_bg_tileset(bg_tileset_path: &Path, band_colors: &[u8; 5]) -> Vec<(S
         for c in 0..(cw / TILE_SIZE) {
             let x0 = c * TILE_SIZE;
             let y0 = r * TILE_SIZE;
-            let tile_img = img.crop_imm(x0, y0, TILE_SIZE, TILE_SIZE);
+            let mut tile_img = img.crop_imm(x0, y0, TILE_SIZE, TILE_SIZE);
 
             let all_transparent = {
                 let rgba = tile_img.to_rgba8();
@@ -185,7 +188,7 @@ pub fn slice_bg_tileset(bg_tileset_path: &Path, band_colors: &[u8; 5]) -> Vec<(S
                 continue;
             }
 
-            let remapped = remap_tile_image(&tile_img, band_colors);
+            let remapped = remap_tile_image(&tile_img, band_colors, false);
             let h = md5_hash(&remapped);
             if seen_hashes.contains_key(&h) {
                 continue;
