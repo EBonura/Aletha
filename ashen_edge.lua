@@ -249,7 +249,6 @@ function hurt_plr()
 end
 
 function draw_hp()
- local ox=1
  local fill=hpbw-hpbw*plr_hp/max_hp
  local tt=time()*3
  local idx=1
@@ -257,7 +256,7 @@ function draw_hp()
   local wave=sin(y*0.12+tt)*1.5
   for x=0,hpbw-1 do
    if ord(hp_buf,idx)~=trans then
-    pset(ox+hpbx+x,hpby+y,hpbw-1-x>=fill+wave and 8 or 2)
+    pset(1+hpbx+x,hpby+y,hpbw-1-x>=fill+wave and 8 or 2)
    end
    idx+=1
   end
@@ -574,7 +573,7 @@ function end_attack()
  end
 end
 
-function damp() vx*=0.8 if abs(vx)<0.1 then vx=0 end end
+function damp() vx*=0.8 end
 
 function air_control(lr)
  if lr~=0 then
@@ -1199,8 +1198,9 @@ function _update60()
   end
  end
  if gs==3 then
-  if btnp(4) then plr_atk+=1 torches-=7 gs=1
-  elseif btnp(5) then max_hp+=1 plr_hp+=1 torches-=7 gs=1
+  if upg then tt-=1 if tt<1 then gs=1 upg=nil end
+  elseif btnp(4) then plr_atk+=1 torches-=7 tt=120 upg="attack +1"
+  elseif btnp(5) then max_hp+=1 plr_hp+=1 torches-=7 tt=120 upg="health +1"
   end
   return
  end
@@ -1407,15 +1407,13 @@ function _draw()
   text_box("Aletha",36,20,8)
   tt+=1
   if tt>60 then
-   local bc=tt%8<4 and 6 or 0
-   text_box("press x",96,112,bc)
+   text_box("press x",96,112,tt%8<4 and 6 or 0)
   end
  elseif gs==2 then
   cls(0)
   text_box("you died",64,46,8)
   if fade_d==0 then
-   local bc=(time()*4)%2<1 and 6 or 0
-   text_box("press x",64,82,bc)
+   text_box("press x",64,82,t()%1<.5 and 6 or 0)
   end
  else
   cls(lvl_bg)
@@ -1446,7 +1444,7 @@ function _draw()
    text_box(c>0 and "\131 "..c or "\131",near_ent.x-cam_x,near_ent.y-20-cam_y,gems>=c and 7 or 8)
   end
   if gs==3 then
-   text_box("what will the\nflames grant?\n\151 attack\n\142 health",64,64,7)
+   text_box(upg or "what will the\nflames grant?\n\151 attack\n\142 health",64,64,7)
   elseif torches>=7 then
    text_box("\131 embrace the flames",64,108,t()%1<.5 and 6 or 0)
   elseif zt then

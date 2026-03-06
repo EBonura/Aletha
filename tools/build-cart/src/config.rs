@@ -52,7 +52,7 @@ pub const TORCH_H: u32 = 16;
 pub const TBAR_W: u32 = 41;
 pub const TBAR_H: u32 = 12;
 
-pub const FONT_CHARS: &str = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()\u{97}\u{8e}\u{94}\u{83}\u{8b}\u{91}";
+pub const FONT_CHARS: &str = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.,:-'?/()\u{97}\u{8e}\u{94}\u{83}\u{8b}\u{91}+";
 
 /// Virtual address space constants.
 pub const VGAP: usize = 0x3100;
