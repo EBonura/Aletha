@@ -1506,7 +1506,7 @@ wrap.addEventListener("mousedown", e => {
       pushUndo();
       const grp = et.hasGroup ? 1 : 0;
       const newEnt = { type: entityPlaceType, x: tx, y: ty, group: grp };
-      if (entityPlaceType === 8) { newEnt.text = ""; newEnt.ew = 1; newEnt.eh = 1; }
+      if (entityPlaceType === 5) { newEnt.text = ""; newEnt.ew = 1; newEnt.eh = 1; }
       entities.push(newEnt);
       selectedEntity = entities.length - 1;
       showEntityProps(selectedEntity);
@@ -1714,19 +1714,19 @@ document.querySelectorAll(".glyph-btn").forEach(btn => {
   });
 });
 document.getElementById("entity-text").addEventListener("input", () => {
-  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 8) {
+  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 5) {
     entities[selectedEntity].text = document.getElementById("entity-text").value;
     render();
   }
 });
 document.getElementById("entity-ew").addEventListener("change", () => {
-  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 8) {
+  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 5) {
     entities[selectedEntity].ew = Math.max(1, parseInt(document.getElementById("entity-ew").value) || 1);
     render();
   }
 });
 document.getElementById("entity-eh").addEventListener("change", () => {
-  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 8) {
+  if (selectedEntity !== null && entities[selectedEntity] && entities[selectedEntity].type === 5) {
     entities[selectedEntity].eh = Math.max(1, parseInt(document.getElementById("entity-eh").value) || 1);
     render();
   }
@@ -1827,6 +1827,8 @@ function autoLoad() { try { const raw=localStorage.getItem("pico8_level_autosave
   remapAllTiles();
   if(d.parallax) for(let i=0;i<NUM_LAYERS;i++) layerParallax[i]=d.parallax[i]??layerParallax[i];
   document.querySelectorAll(".parallax-input").forEach(inp=>{inp.value=layerParallax[parseInt(inp.dataset.layer)];});
+  const loadedTexts=d.texts||[];
+  if(d.entities) entities=d.entities.map(e=>{const ent={type:e.type,x:e.x,y:e.y,group:e.group};if(e.type===2||e.type===3)ent.cost=e.cost||0;if(e.type===5){ent.text=loadedTexts[e.group-1]||"";ent.ew=e.ew||1;ent.eh=e.eh||1;ent.group=0;}return ent;});
   document.getElementById("map-w").value=mapW;document.getElementById("map-h").value=mapH;return true;} catch(e){return false;} }
 setInterval(autoSave, 10000);
 
@@ -1846,14 +1848,14 @@ document.getElementById("export-close").addEventListener("click",()=>document.ge
 // ── Level I/O (via local server, JSON) ──
 
 function getLevelData() {
-  // Build texts array from type 8 entities and auto-assign their group as 1-based index
+  // Build texts array from type 5 entities and auto-assign their group as 1-based index
   const texts = [];
   const entsCopy = entities.map(e => {
     const out = {type: e.type, x: e.x, y: e.y, group: e.group};
     if (e.type === 2 || e.type === 6) {
       out.cost = e.cost || 0;
     }
-    if (e.type === 8) {
+    if (e.type === 5) {
       texts.push(e.text || "");
       out.group = texts.length; // 1-based index into _zt
       out.ew = e.ew || 1;
