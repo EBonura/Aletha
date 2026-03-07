@@ -70,7 +70,7 @@ gems=0   -- collected count
 
 -- player HP
 plr_hp,plr_inv,death_t,ckpt_x,ckpt_y,safe_x,safe_y=3,0,0,0,0,0,0
-ptl_rm={[5]=2,[6]=8,[7]=8}
+ptl_rm=split"1,2,3,4,2,8,8"
 -- entity types: 1=door,2=switch,3=portal,4=torch,5=zone,6=spider,7=wheelbot,8=hellbot,9=boss
 
 -- spider projectiles
