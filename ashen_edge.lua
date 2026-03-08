@@ -606,9 +606,17 @@ function check_attacks()
   end
  end
 end
-function mkp(x,y,s)
- local p={x=x,y=y,vx=rnd(s)-s/2,vy=rnd(s)-s/2,age=0}
+function mkp(x,y,s,sz)
+ local p={x=x,y=y,vx=rnd(s)-s/2,vy=rnd(s)-s/2,age=0,sz=sz}
  add(parts,p) return p
+end
+function draw_parts()
+ for p in all(parts) do
+  local qx,qy=p.x-cam_x,p.y-cam_y
+  if p.c then dspr(p.c,qx,qy)
+  elseif p.cl then if p.sz then circfill(qx,qy,p.sz,p.cl) else pset(qx,qy,p.cl) end
+  else circfill(qx,qy,2,8) circfill(qx-1,qy-1,1,14) end
+ end
 end
 function pemit(x,y,cl,r,d,s)
  add(parts,{em=true,x=x,y=y,cl=cl,r=r,d=d,s=s or 1})
@@ -1157,6 +1165,8 @@ function _update60()
  end
  if gs~=4 then
   tt+=1
+  update_parts()
+  if rnd()<.15 then local q=mkp(rnd(128),rnd(128),.5,flr(rnd(2))) q.cl=rnd()<.5 and 2 or 8 q.vy=-rnd(.5)-.2 end
   if fade_d==0 and (btnp(4) or btnp(5)) then sfx(sfx_confirm) ngs=min(gs+1,4) fade_d=1 end
   return
  end
@@ -1340,6 +1350,7 @@ function _update60()
  update_ents()
  update_sprojs()
  update_parts()
+ if rnd()<.15 then local q=mkp(rnd(128)+cam_x,rnd(128)+cam_y,.5,flr(rnd(2))) q.cl=rnd()<.5 and 2 or 8 q.vy=-rnd(.5)-.2 end
 
  if torches>=7 and btnp(3) then gs=5 end
  -- update camera
@@ -1354,6 +1365,7 @@ function _draw()
  if gs==4 or gs==5 then
   cls(lvl_bg)
   draw_layer(1)
+  draw_parts()
   draw_layer(2)
   draw_ents()
   draw_sprojs()
@@ -1365,12 +1377,6 @@ function _draw()
   local dx=flip and px-(acw-1-ax) or px-ax
   if plr_inv==0 or plr_inv%4<2 then
    draw_char(cur_anim,cur_frame,dx-cam_x,py-cam_y,flip)
-  end
-  for p in all(parts) do
-   local qx,qy=p.x-cam_x,p.y-cam_y
-   if p.c then dspr(p.c,qx,qy)
-   elseif p.cl then pset(qx,qy,p.cl)
-   else circfill(qx,qy,2,8) circfill(qx-1,qy-1,1,14) end
   end
   draw_hp()
   draw_char(a_tbar,min(torches,6)+1,0,hp_h)
@@ -1388,13 +1394,16 @@ function _draw()
   end
  else
   cls(gs==1 and 1 or 0)
+  if gs==1 then
+   draw_char(a_tbg2,1,0,min(0,-64+tt*0.5))
+  end
+  draw_parts()
   if gs==0 then
    local w=p8print("bonnie games",0,0)
    p8print("bonnie games",64-w\2,56,8)
    w=p8print("presents",0,0)
    p8print("presents",64-w\2,72,7)
   elseif gs==1 then
-   draw_char(a_tbg2,1,0,min(0,-64+tt*0.5))
    draw_char(a_tbg1,1,0,0)
    draw_char(a_tfg,1,0,max(0,64-tt*0.5))
    if tt>128 then text_box("Aletha",36,20,8) end
