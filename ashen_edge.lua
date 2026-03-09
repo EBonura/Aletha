@@ -1264,7 +1264,7 @@ function _update60()
    if airborne then set_anim(a_fall) else to_idle() end
   end
  elseif act=="asweep" then
-  if cur_frame>3 then vx=facing*3 end
+  apply_atk_drift()
   if anim_done() then
    if buf_atk>0 then start_act("aslash",a_xslice)
    else act=nil
