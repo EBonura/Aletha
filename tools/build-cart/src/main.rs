@@ -110,8 +110,13 @@ fn main() {
     eprintln!("    from PNG: {} chars, cell {}x{}", font_frames.len(), font_cw, font_ch);
 
     eprintln!("\nCompressing entity animations...");
+    // Door uses force_perframe=true for per-frame bboxes (runtime perf: closed door is a thin strip)
+    let (door_block, door_info) = animation::encode_animation_opts("door", &door_frames, 48, 48, None, None, true);
+    anim_blocks.push(("door".to_string(), door_block));
+    total_frames += door_frames.len();
+    eprintln!("{}", door_info);
+
     let ent_anims: Vec<(&str, &Vec<Vec<u8>>, u32, u32)> = vec![
-        ("door", &door_frames, 48, 48),
         ("sw_start", &sw_start_frames, 16, 19),
         ("sw_idle", &sw_idle_frames, 16, 19),
         ("sw_down", &sw_down_frames, 16, 19),

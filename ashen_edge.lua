@@ -12,7 +12,7 @@
 combo_chain={a_atk1,a_xslice}
 
 -- game state: 0=splash, 1=title, 2..N=intro, N+1=play, N+2=upgrade, N+3=dead
-gs,tt,zt=5,0,nil
+gs,tt,zt=0,0,nil
 torches,plr_atk,max_hp=0,1,3
 torch_got={}
 
@@ -1096,25 +1096,27 @@ end
 function draw_ents()
  for e in all(ents) do
   local t=e.type
-  if t==7 then
-   draw_bot(e,wb_anc,wheelbot_cw,wheelbot_ch)
-  elseif t==8 then
-   draw_bot(e,hb_anc,hellbot_cw,hellbot_ch)
-  elseif t==9 then
-   draw_bot(e,bk_anc,boss_cw,boss_ch)
-  elseif t==6 then
-   local sx,sy=e.x-cam_x,e.y-cam_y
-   local flip=e.mdir==-1
-   local rot=sp_rot[e.surf+1]
-   draw_char(e.anim,e.frame,sx,sy,flip,rot)
-  elseif t==3 then
-   draw_char(e.anim,e.frame,e.x-portal_cw\2-cam_x,e.y-portal_ch-cam_y,nil,nil,e.active and ptl_rm)
-  elseif t==4 then
-   draw_char(e.anim,e.frame,e.x-cam_x,e.y-cam_y)
-  elseif t~=5 then
-   local sx,sy=e.tx*16-cam_x,e.ty*16-cam_y
-   if t==1 then sx-=16 end
-   draw_char(e.anim,e.frame,sx,sy)
+  if t~=5 and e.x-cam_x>-80 and e.x-cam_x<208 and e.y-cam_y>-80 and e.y-cam_y<208 then
+   if t==7 then
+    draw_bot(e,wb_anc,wheelbot_cw,wheelbot_ch)
+   elseif t==8 then
+    draw_bot(e,hb_anc,hellbot_cw,hellbot_ch)
+   elseif t==9 then
+    draw_bot(e,bk_anc,boss_cw,boss_ch)
+   elseif t==6 then
+    local sx,sy=e.x-cam_x,e.y-cam_y
+    local flip=e.mdir==-1
+    local rot=sp_rot[e.surf+1]
+    draw_char(e.anim,e.frame,sx,sy,flip,rot)
+   elseif t==3 then
+    draw_char(e.anim,e.frame,e.x-portal_cw\2-cam_x,e.y-portal_ch-cam_y,nil,nil,e.active and ptl_rm)
+   elseif t==4 then
+    draw_char(e.anim,e.frame,e.x-cam_x,e.y-cam_y)
+   else
+    local sx,sy=e.tx*16-cam_x,e.ty*16-cam_y
+    if t==1 then sx-=16 end
+    draw_char(e.anim,e.frame,sx,sy)
+   end
   end
  end
 end
@@ -1329,8 +1331,7 @@ function _draw()
  if gs==5 or gs==6 then
   cls(lvl_bg)
   draw_layer(1)
-  draw_parts()
-  draw_layer(2)
+  draw_parts() draw_layer(2)
   draw_ents()
   draw_sprojs()
   local acw=acache[cur_anim].cw

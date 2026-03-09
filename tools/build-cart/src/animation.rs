@@ -640,6 +640,7 @@ fn encode_type6(
 }
 
 /// Try T4/T5/T6 and pick smallest. Returns (block, info_string).
+/// If force_perframe is true, always use T5 (per-frame bbox) for runtime performance.
 pub fn encode_animation(
     name: &str,
     frames_pixels: &[Vec<u8>],
@@ -647,6 +648,18 @@ pub fn encode_animation(
     fh: u32,
     bpp_override: Option<u8>,
     palette_override: Option<&[u8]>,
+) -> (Vec<u8>, String) {
+    encode_animation_opts(name, frames_pixels, fw, fh, bpp_override, palette_override, false)
+}
+
+pub fn encode_animation_opts(
+    name: &str,
+    frames_pixels: &[Vec<u8>],
+    fw: u32,
+    fh: u32,
+    bpp_override: Option<u8>,
+    palette_override: Option<&[u8]>,
+    force_perframe: bool,
 ) -> (Vec<u8>, String) {
     let bpp = bpp_override.unwrap_or_else(|| min_bpp_for_frames(frames_pixels));
     let built_pal;
@@ -668,12 +681,16 @@ pub fn encode_animation(
     let (b6, i6) = encode_type6(frames_pixels, fw, fh, bpp, palette);
 
     let candidates = [("T4", b4, i4), ("T5", b5, i5), ("T6", b6, i6)];
-    let best_idx = candidates
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, (_, b, _))| b.len())
-        .unwrap()
-        .0;
+    let best_idx = if force_perframe {
+        1 // T5
+    } else {
+        candidates
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (_, b, _))| b.len())
+            .unwrap()
+            .0
+    };
 
     let (best_tag, ref best_block, ref best_info) = candidates[best_idx];
     let others: String = candidates
