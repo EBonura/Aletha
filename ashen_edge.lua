@@ -12,7 +12,7 @@
 combo_chain={a_atk1,a_xslice}
 
 -- game state: 0=splash, 1=title, 2..N=intro, N+1=play, N+2=upgrade, N+3=dead
-gs,tt,zt=0,0,nil
+gs,tt,zt=5,0,nil
 torches,plr_atk,max_hp=0,1,3
 torch_got={}
 
@@ -51,7 +51,8 @@ combo_idx,combo_queued=0,false
 buf_jump,buf_atk,buf_sweep=0,0,0
 
 -- attack movement tracking
-atk_anchor0,atk_px0,air_atk=0,0,false
+atk_anchor0,atk_px0=0,0
+act=nil -- action overlay: nil,"combo","sweep","aslash","asweep"
 
 -- forward push on attack end
 -- order: idle,run,jump,fall,hit,land,atk1,xslice,sweep,death
@@ -234,7 +235,7 @@ function hurt_plr()
   plr_hp-=1
   plr_inv=60
   px,py=safe_x,safe_y
-  vx,vy=0,0
+  vx,vy=0,0 act=nil
   set_anim(a_hit,"land")
   if plr_hp<=0 then
    set_anim(a_death,"death")
@@ -471,7 +472,7 @@ function reset_game()
  px,py=ckpt_x,ckpt_y
  safe_x,safe_y=px,py
  vx,vy=0,0
- to_idle()
+ to_idle() act=nil
  grounded,death_t=true,0
  gems,sprojs=0,{}
  ents,ent_grp={},{}
@@ -512,22 +513,22 @@ function start_combo()
  set_anim(combo_chain[1],"attack")
  sa(combo_chain[1])
  buf_atk=0
+ act="combo"
 end
 
 function start_sweep()
  vx=0
  set_anim(a_sweep,"sweep")
  sa(a_sweep)
- air_atk=false
  buf_sweep=0
+ act="sweep"
 end
 
-function start_air_atk()
- air_atk=true
- cur_anim,cur_frame,anim_timer=a_xslice,1,0
- sa(a_xslice)
- state="sweep"
+function start_act(a,anim)
+ cur_anim,cur_frame,anim_timer=anim,1,0
+ sa(anim)
  buf_atk,buf_sweep=0,0
+ act=a
 end
 
 function try_move_x(dx)
@@ -563,18 +564,14 @@ end
 
 function end_attack()
  local push=atk_push[cur_anim] or 0
- if push~=0 then
+ if push~=0 and grounded then
   try_move_x(push*facing)
  end
 end
 
 function air_control(lr)
- if lr~=0 then
-  vx=lr*1.5
-  facing=lr
- else
-  vx*=0.8
- end
+ if lr~=0 then vx,facing=lr*1.5,lr
+ else vx*=0.8 end
 end
 
 function check_attacks()
@@ -1190,136 +1187,112 @@ function _update60()
   return
  end
 
- -- -- state machine --
+ -- -- movement layer --
  local s=state
- local ba=buf_atk>0 or buf_sweep>0
- if lr~=0 and anim_done(10) and (s=="land" or (not combo_queued and (s=="attack" or (s=="sweep" and not air_atk)))) then
-  if s~="land" then end_attack() end
-  combo_idx=0 vx,facing=lr*1.5,lr set_anim(a_run,"run")
- elseif s=="idle" or s=="run" then
-  -- walked off ledge (wait 4 frames)
+ if s=="idle" or s=="run" then
   if not grounded and air_time>4 then
-   set_anim(a_fall)
-   state="fall"
-  -- buffered jump
-  elseif buf_jump>0 then
+   printh("!mv "..s.."->fall at="..air_time)
+   set_anim(a_fall) state="fall"
+  elseif buf_jump>0 and not act then
    do_jump()
-  -- buffered z: start combo
-  elseif buf_atk>0 then
-   start_combo()
-  -- buffered x: sweep
-  elseif buf_sweep>0 then
-   start_sweep()
-  elseif lr~=0 then
-   vx,facing=lr*1.5,lr
-   if s~="run" then
-    set_anim(a_run,"run")
-   end
-  else
-   vx*=0.8
-   if s~="idle" then
-    to_idle()
-   end
-  end
-
- elseif s=="jump" then
-  air_control(lr)
-  if buf_sweep>0 then
-   start_sweep() air_atk=true
-  elseif buf_atk>0 then
-   start_air_atk()
-  elseif vy>=0 then
-   set_anim(a_fall,"fall")
-  end
-
- elseif s=="fall" then
-  air_control(lr)
-  if buf_sweep>0 then
-   start_sweep() air_atk=true
-  elseif buf_atk>0 then
-   start_air_atk()
-  elseif grounded then
-   -- check buffers before landing
-   if buf_jump>0 then
-    do_jump()
+  elseif not act then
+   if lr~=0 then
+    vx,facing=lr*1.5,lr
+    if s~="run" then set_anim(a_run,"run") end
    else
-    vx=0
-    to_land()
+    vx*=0.8
+    if s~="idle" then to_idle() end
    end
   end
-
+ elseif s=="jump" then
+  if not act then air_control(lr) end
+  if vy>=0 then
+   state="fall"
+   if not act then set_anim(a_fall) end
+  end
+ elseif s=="fall" then
+  if not act then air_control(lr) end
+  if grounded then
+   act=nil
+   if buf_jump>0 then do_jump()
+   else vx=0 to_land() end
+  end
  elseif s=="land" then
   vx=0
-  if anim_done() then
-   -- check buffered actions
-   if buf_atk>0 then
-    start_combo()
-   elseif buf_sweep>0 then
-    start_sweep()
-   else
-    to_idle()
-   end
-  end
+  if not act and anim_done() then to_idle() end
+ end
 
- elseif s=="attack" then
+ -- -- action layer --
+ local airborne=state=="jump" or state=="fall"
+ if act=="combo" then
   apply_atk_drift()
-  -- buffer combo input anytime
-  if buf_atk>0
-   and combo_idx<#combo_chain then
-   combo_queued=true
-   buf_atk=0
+  if buf_atk>0 and combo_idx<#combo_chain then
+   combo_queued=true buf_atk=0
   end
-  if anim_done() then
+  if lr~=0 and anim_done(10) and not combo_queued then
+   printh("!rc combo") end_attack() act=nil combo_idx=0
+   vx,facing=lr*1.5,lr set_anim(a_run,"run")
+  elseif anim_done() then
    end_attack()
-   if combo_queued
-    and combo_idx<#combo_chain then
-    combo_idx+=1
-    combo_queued=false
+   if combo_queued and combo_idx<#combo_chain then
+    combo_idx+=1 combo_queued=false
+    printh("!chain "..combo_idx)
     set_anim(combo_chain[combo_idx])
     sa(combo_chain[combo_idx])
    else
-    combo_idx=0
-    to_idle()
+    act=nil combo_idx=0 to_idle()
    end
   end
-
- elseif s=="sweep" then
-  if air_atk then
-   if cur_frame>3 then vx=facing*3
-   else air_control(lr) end
-   if ba and anim_done() then
-    start_air_atk()
-    return
-   elseif grounded then
-    air_atk=false
-    to_land()
-   elseif anim_done() then
-    air_atk=false
-    set_anim(a_fall,"fall")
-   end
-  else
-   apply_atk_drift()
-   if anim_done() then
-    end_attack()
-    if ba then
-     vx=0
-     set_anim(a_xslice,"attack")
-     sa(a_xslice)
-     buf_atk,buf_sweep=0,0
-     combo_idx=0
-    else
-     to_idle()
-    end
+ elseif act=="sweep" then
+  apply_atk_drift()
+  if lr~=0 and anim_done(10) then
+   printh("!rc sweep") end_attack() act=nil
+   vx,facing=lr*1.5,lr set_anim(a_run,"run")
+  elseif anim_done() then
+   end_attack()
+   if buf_atk>0 or buf_sweep>0 then
+    vx=0 set_anim(a_xslice,"attack")
+    sa(a_xslice) buf_atk,buf_sweep=0,0
+    combo_idx=0 act="combo"
+   else
+    act=nil to_idle()
    end
   end
+ elseif act=="aslash" then
+  if anim_done() then
+   act=nil
+   if airborne then set_anim(a_fall) else to_idle() end
+  end
+ elseif act=="asweep" then
+  if cur_frame>3 then vx=facing*3 end
+  if anim_done() then
+   if buf_atk>0 then start_act("aslash",a_xslice)
+   else act=nil
+    if airborne then set_anim(a_fall) else to_idle() end
+   end
+  end
+ end
 
+ -- -- input layer (no active action) --
+ if not act and state~="land" then
+  if buf_atk>0 then
+   if airborne then start_act("aslash",a_xslice)
+   else start_combo() end
+  elseif buf_sweep>0 then
+   if airborne then start_act("asweep",a_sweep)
+   else start_sweep() end
+  end
+ elseif not act and state=="land" and anim_done() then
+  if buf_atk>0 then start_combo()
+  elseif buf_sweep>0 then start_sweep()
+  end
  end
 
  if grounded and (s=="idle" or s=="run") then safe_x,safe_y=px,py end
  -- -- physics --
  prev_by1=py+19
  if not grounded then
-  vy=min(vy+(air_atk and 0.04 or 0.15),3)
+  vy=min(vy+(act=="asweep" and 0.04 or 0.15),3)
   air_time+=1
  else
   air_time=0
@@ -1342,9 +1315,7 @@ function _update60()
  if tile_flag(px\16,(py+19)\16)&16>0 then hurt_plr() end
 
  -- attack hitbox vs destructibles + entities
- if state=="attack" or state=="sweep" then
-  check_attacks()
- end
+ if act then check_attacks() end
 
  -- update entities & particles
  update_ents()
